@@ -43,6 +43,16 @@ function normalizeRect(
   return { x, y, width, height };
 }
 
+function extractInvokeError(error: unknown): string {
+  if (typeof error === "string") return error;
+  if (error && typeof error === "object") {
+    if ("message" in error && typeof error.message === "string") {
+      return error.message;
+    }
+  }
+  return String(error);
+}
+
 export default function CaptureOverlay() {
   const [context, setContext] = useState<OverlayContext | null>(null);
   const [phase, setPhase] = useState<OverlayPhase>("idle");
@@ -50,6 +60,7 @@ export default function CaptureOverlay() {
   const [lockedSelection, setLockedSelection] = useState<SelectionRect | null>(null);
   const [session, setSession] = useState<ProcessCaptureResult | null>(null);
   const [ocrLoading, setOcrLoading] = useState(false);
+  const [captureError, setCaptureError] = useState<string | null>(null);
   const startPoint = useRef<{ x: number; y: number } | null>(null);
   const ocrRunId = useRef(0);
 
@@ -59,16 +70,18 @@ export default function CaptureOverlay() {
     setLockedSelection(null);
     setSession(null);
     setOcrLoading(false);
+    setCaptureError(null);
     startPoint.current = null;
     ocrRunId.current += 1;
   }, []);
 
   const cancelCapture = useCallback(async () => {
     resetState();
+    setContext(null);
     await invoke("cancel_capture");
   }, [resetState]);
 
-  const runBackgroundCapture = useCallback(
+  const runBackgroundCrop = useCallback(
     async (rect: SelectionRect, overlayContext: OverlayContext) => {
       const runId = ++ocrRunId.current;
 
@@ -88,6 +101,9 @@ export default function CaptureOverlay() {
         });
 
         if (runId !== ocrRunId.current) return;
+
+        setCaptureError(null);
+        setPhase("menu");
 
         setSession({
           capture,
@@ -122,8 +138,10 @@ export default function CaptureOverlay() {
         setOcrLoading(false);
         await emit("capture-complete", result);
       } catch (error) {
-        console.error("Capture/OCR failed:", error);
+        console.error("Crop/OCR failed:", error);
         if (runId === ocrRunId.current) {
+          setCaptureError(extractInvokeError(error));
+          setPhase("menu");
           setOcrLoading(false);
         }
       }
@@ -152,7 +170,7 @@ export default function CaptureOverlay() {
   }, [cancelCapture, resetState]);
 
   const handleMouseDown = (event: React.MouseEvent<HTMLDivElement>) => {
-    if (phase === "menu") return;
+    if (phase === "menu" || phase === "capturing") return;
 
     const { clientX, clientY } = event;
     startPoint.current = { x: clientX, y: clientY };
@@ -161,6 +179,7 @@ export default function CaptureOverlay() {
     setLockedSelection(null);
     setSession(null);
     setOcrLoading(false);
+    setCaptureError(null);
   };
 
   const handleMouseMove = (event: React.MouseEvent<HTMLDivElement>) => {
@@ -195,41 +214,61 @@ export default function CaptureOverlay() {
 
     setLockedSelection(rect);
     setSelection(null);
-    setPhase("menu");
+    setPhase("capturing");
     setOcrLoading(true);
     setSession(null);
+    setCaptureError(null);
 
-    void runBackgroundCapture(rect, context);
+    void runBackgroundCrop(rect, context);
   };
 
-  const activeSelection = lockedSelection ?? selection;
+  const activeSelection = phase === "selecting" ? selection : lockedSelection;
   const isInteractive = phase === "idle" || phase === "selecting";
+  const showSelectionChrome = phase === "selecting" || phase === "menu";
+  const snapshotSrc = context?.snapshot_base64
+    ? `data:image/png;base64,${context.snapshot_base64}`
+    : null;
 
   return (
-    <div
-      className={`fixed inset-0 ${isInteractive ? "pointer-events-auto cursor-crosshair" : "pointer-events-none"}`}
-      onMouseDown={handleMouseDown}
-      onMouseMove={handleMouseMove}
-      onMouseUp={handleMouseUp}
-    >
-      {phase === "idle" && (
-        <div className="pointer-events-none fixed left-1/2 top-4 -translate-x-1/2 rounded-full border border-violet-300/25 bg-slate-900/90 px-4 py-2 text-sm text-slate-100 shadow-md">
-          Arrastra para seleccionar · Esc para cancelar
-        </div>
-      )}
-
-      {activeSelection && activeSelection.width > 0 && activeSelection.height > 0 && (
-        <SelectionFrame rect={activeSelection} phase={phase} />
-      )}
-
-      {lockedSelection && phase === "menu" && (
-        <FloatingActionMenu
-          selection={lockedSelection}
-          session={session}
-          ocrLoading={ocrLoading}
-          onClose={() => void cancelCapture()}
+    <div className="fixed inset-0">
+      {snapshotSrc && (
+        <img
+          src={snapshotSrc}
+          alt=""
+          draggable={false}
+          className="pointer-events-none fixed inset-0 h-full w-full select-none object-fill"
         />
       )}
+
+      <div
+        className={`fixed inset-0 ${isInteractive ? "pointer-events-auto cursor-crosshair" : "pointer-events-none"}`}
+        onMouseDown={handleMouseDown}
+        onMouseMove={handleMouseMove}
+        onMouseUp={handleMouseUp}
+      >
+        {phase === "idle" && (
+          <div className="pointer-events-none fixed left-1/2 top-4 -translate-x-1/2 rounded-full border border-violet-300/25 bg-slate-900/90 px-4 py-2 text-sm text-slate-100 shadow-md">
+            Arrastra para seleccionar · Esc para cancelar
+          </div>
+        )}
+
+        {activeSelection &&
+          activeSelection.width > 0 &&
+          activeSelection.height > 0 &&
+          showSelectionChrome && (
+            <SelectionFrame rect={activeSelection} phase={phase} />
+          )}
+
+        {lockedSelection && phase === "menu" && (
+          <FloatingActionMenu
+            selection={lockedSelection}
+            session={session}
+            ocrLoading={ocrLoading}
+            captureError={captureError}
+            onClose={() => void cancelCapture()}
+          />
+        )}
+      </div>
     </div>
   );
 }

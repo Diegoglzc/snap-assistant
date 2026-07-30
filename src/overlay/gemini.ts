@@ -1,24 +1,26 @@
+import { GoogleGenAI } from "@google/genai";
+import OpenAI from "openai";
 import {
   getDefaultGeminiModel,
   getGeminiApiKey,
   normalizeGeminiModelId,
   type GeminiModelId,
 } from "./geminiPrefs";
+import {
+  getDefaultOpenAIModel,
+  getOpenAIApiKey,
+  normalizeOpenAIModelId,
+  type OpenAIModelId,
+} from "./openaiPrefs";
 import type { TargetLanguageCode } from "./translationPrefs";
 import { getLanguageLabel } from "./translationPrefs";
 
-const API_BASE = "https://generativelanguage.googleapis.com/v1beta/models";
+const openai = new OpenAI({
+  apiKey: import.meta.env.VITE_OPENAI_API_KEY,
+  dangerouslyAllowBrowser: true,
+});
 
-interface GeminiResponse {
-  candidates?: Array<{
-    content?: {
-      parts?: Array<{ text?: string }>;
-    };
-  }>;
-  error?: {
-    message?: string;
-  };
-}
+const geminiAi = new GoogleGenAI({ apiKey: import.meta.env.VITE_GEMINI_API_KEY });
 
 export interface TranslateResponse {
   detected_language: string;
@@ -28,44 +30,70 @@ export interface TranslateResponse {
 async function generateContent(
   prompt: string,
   imageBase64?: string,
+  model?: OpenAIModelId,
+): Promise<string> {
+  getOpenAIApiKey();
+  const modelId = model ? normalizeOpenAIModelId(model) : getDefaultOpenAIModel();
+
+  const content: OpenAI.Chat.Completions.ChatCompletionContentPart[] = [
+    { type: "text", text: prompt },
+  ];
+
+  if (imageBase64) {
+    content.push({
+      type: "image_url",
+      image_url: {
+        url: `data:image/png;base64,${imageBase64}`,
+      },
+    });
+  }
+
+  const response = await openai.chat.completions.create({
+    model: modelId,
+    messages: [{ role: "user", content }],
+    temperature: 0.4,
+    max_tokens: 1024,
+  });
+
+  const text = response.choices[0]?.message?.content?.trim() ?? "";
+
+  if (!text) {
+    throw new Error("OpenAI no devolvió contenido.");
+  }
+
+  return text;
+}
+
+async function generateContentGemini(
+  prompt: string,
+  imageBase64?: string,
   model: GeminiModelId = getDefaultGeminiModel(),
 ): Promise<string> {
-  const apiKey = getGeminiApiKey();
+  getGeminiApiKey();
   const modelId = normalizeGeminiModelId(model);
-  const url = `${API_BASE}/${modelId}:generateContent?key=${apiKey}`;
 
-  const parts: Array<{ text?: string; inline_data?: { mime_type: string; data: string } }> =
+  const parts: Array<{ text?: string; inlineData?: { mimeType: string; data: string } }> =
     [{ text: prompt }];
 
   if (imageBase64) {
     parts.push({
-      inline_data: {
-        mime_type: "image/png",
+      inlineData: {
+        mimeType: "image/png",
         data: imageBase64,
       },
     });
   }
 
-  const response = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      contents: [{ parts }],
-      generationConfig: {
-        temperature: 0.4,
-        maxOutputTokens: 1024,
-      },
-    }),
+  const response = await geminiAi.models.generateContent({
+    model: modelId,
+    contents: [{ parts }],
+    config: {
+      temperature: 0.4,
+      maxOutputTokens: 1024,
+    },
   });
 
-  const payload = (await response.json()) as GeminiResponse;
-
-  if (!response.ok) {
-    throw new Error(payload.error?.message ?? `Gemini respondió con HTTP ${response.status}`);
-  }
-
-  const text =
-    payload.candidates?.[0]?.content?.parts?.find((part) => part.text)?.text?.trim() ?? "";
+  const text = response.text?.trim() ?? "";
 
   if (!text) {
     throw new Error("Gemini no devolvió contenido.");
@@ -94,7 +122,7 @@ function parseTranslateResponse(raw: string): TranslateResponse {
 export async function geminiTranslate(
   text: string,
   targetLang: TargetLanguageCode,
-  model?: GeminiModelId,
+  model?: OpenAIModelId,
 ): Promise<TranslateResponse> {
   const target = getLanguageLabel(targetLang);
   const raw = await generateContent(
@@ -108,7 +136,7 @@ export async function geminiTranslate(
 export async function geminiTranslateFromImage(
   imageBase64: string,
   targetLang: TargetLanguageCode,
-  model?: GeminiModelId,
+  model?: OpenAIModelId,
 ): Promise<TranslateResponse> {
   const target = getLanguageLabel(targetLang);
   const raw = await generateContent(
@@ -121,7 +149,7 @@ export async function geminiTranslateFromImage(
 
 export async function geminiSummarize(
   text: string,
-  model?: GeminiModelId,
+  model?: OpenAIModelId,
 ): Promise<string> {
   return generateContent(
     `Resume el siguiente texto en exactamente 3 puntos clave concisos. Usa viñetas numeradas (1., 2., 3.):\n\n${text}`,
@@ -132,7 +160,7 @@ export async function geminiSummarize(
 
 export async function geminiSummarizeFromImage(
   imageBase64: string,
-  model?: GeminiModelId,
+  model?: OpenAIModelId,
 ): Promise<string> {
   return generateContent(
     "Lee el contenido visible en esta imagen y resume la información en exactamente 3 puntos clave concisos. Usa viñetas numeradas (1., 2., 3.). Responde en español.",
@@ -143,7 +171,7 @@ export async function geminiSummarizeFromImage(
 
 export async function geminiExtractList(
   text: string,
-  model?: GeminiModelId,
+  model?: OpenAIModelId,
 ): Promise<string> {
   return generateContent(
     `Extrae una lista estructurada de elementos del siguiente texto. Devuelve viñetas claras:\n\n${text}`,
@@ -154,7 +182,7 @@ export async function geminiExtractList(
 
 export async function geminiExtractListFromImage(
   imageBase64: string,
-  model?: GeminiModelId,
+  model?: OpenAIModelId,
 ): Promise<string> {
   return generateContent(
     "Extrae una lista estructurada de elementos visibles en esta imagen. Devuelve viñetas claras en español.",
@@ -166,7 +194,7 @@ export async function geminiExtractListFromImage(
 export async function geminiIdentifyObject(
   imageBase64: string,
   contextText: string,
-  model?: GeminiModelId,
+  model?: OpenAIModelId,
 ): Promise<string> {
   const prompt = contextText.trim()
     ? `Contexto OCR: "${contextText}"\n\nIdentifica el objeto, producto o lugar principal en esta imagen. Responde en español con nombre, descripción breve y contexto.`
@@ -178,7 +206,7 @@ export async function geminiIdentifyObject(
 export async function geminiExplainError(
   imageBase64: string,
   contextText: string,
-  model?: GeminiModelId,
+  model?: OpenAIModelId,
 ): Promise<string> {
   return generateContent(
     `Analiza esta captura de pantalla. Contexto OCR: "${contextText}"\n\nSi hay un error, mensaje de fallo o problema visible, explícalo en español de forma clara y sugiere pasos para resolverlo. Si no hay error evidente, describe lo que ves.`,
@@ -190,7 +218,7 @@ export async function geminiExplainError(
 export async function geminiShopSearch(
   imageBase64: string,
   contextText: string,
-  model?: GeminiModelId,
+  model?: OpenAIModelId,
 ): Promise<string> {
   return generateContent(
     `Analiza esta imagen de producto. Contexto OCR: "${contextText}"\n\nIdentifica el producto y sugiere 3 opciones de compra con:\n- Nombre del producto\n- Precio estimado (si inferible)\n- Enlace de búsqueda sugerido (URL de Google Shopping o Amazon)\n\nFormato en español, una opción por línea.`,
@@ -201,7 +229,7 @@ export async function geminiShopSearch(
 
 export async function geminiExtractTextFromImage(
   imageBase64: string,
-  model?: GeminiModelId,
+  model?: OpenAIModelId,
 ): Promise<string> {
   return generateContent(
     "Transcribe todo el texto legible en esta imagen. Devuelve únicamente el texto detectado, preservando saltos de línea cuando sea útil.",
@@ -210,7 +238,7 @@ export async function geminiExtractTextFromImage(
   );
 }
 
-function parseNumbersFromGeminiResponse(raw: string): number[] {
+function parseNumbersFromResponse(raw: string): number[] {
   const jsonMatch = raw.match(/\[[\d\s.,\-eE]+\]/);
   if (!jsonMatch) return [];
 
@@ -228,7 +256,7 @@ function parseNumbersFromGeminiResponse(raw: string): number[] {
 
 export async function geminiExtractNumbersFromImage(
   imageBase64: string,
-  model?: GeminiModelId,
+  model?: OpenAIModelId,
 ): Promise<number[]> {
   const raw = await generateContent(
     `Analiza esta imagen y extrae todos los números visibles (enteros o decimales), en orden de aparición de arriba a abajo y de izquierda a derecha.
@@ -239,5 +267,23 @@ Ejemplo: [12.5, 3, 100]`,
     model,
   );
 
-  return parseNumbersFromGeminiResponse(raw);
+  return parseNumbersFromResponse(raw);
 }
+
+// --- Implementaciones Gemini (reservadas para uso futuro) ---
+
+export async function geminiTranslateWithGemini(
+  text: string,
+  targetLang: TargetLanguageCode,
+  model?: GeminiModelId,
+): Promise<TranslateResponse> {
+  const target = getLanguageLabel(targetLang);
+  const raw = await generateContentGemini(
+    `Detecta automáticamente el idioma del texto de entrada.\nTradúcelo al ${target}.\n\nResponde EXACTAMENTE en este formato (sin markdown):\nDETECTED: [nombre del idioma detectado en español]\nTRANSLATION:\n[texto traducido únicamente]\n\nTexto:\n${text}`,
+    undefined,
+    model,
+  );
+  return parseTranslateResponse(raw);
+}
+
+export { generateContentGemini };

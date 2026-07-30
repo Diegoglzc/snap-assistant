@@ -2,10 +2,13 @@ mod capture;
 mod ocr;
 
 use base64::{engine::general_purpose::STANDARD, Engine};
-use capture::{capture_region as capture_screen_region, CaptureRegion, CaptureResult};
+use capture::{crop_region, capture_monitor, snapshot_base64, CaptureRegion, CaptureResult, MonitorCapture};
 use ocr::OcrResult;
+use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
+
+struct CaptureBufferState(Mutex<Option<MonitorCapture>>);
 
 #[derive(Clone, serde::Serialize)]
 struct OverlayContext {
@@ -14,6 +17,9 @@ struct OverlayContext {
     scale_factor: f64,
     width: u32,
     height: u32,
+    snapshot_base64: String,
+    snapshot_width: u32,
+    snapshot_height: u32,
 }
 
 #[derive(serde::Serialize, Clone)]
@@ -56,6 +62,14 @@ fn show_capture_overlay(app: &AppHandle) -> Result<(), String> {
     let size = monitor.size();
     let scale_factor = monitor.scale_factor();
 
+    let monitor_capture = capture_monitor(pos.x, pos.y, scale_factor)?;
+    let snapshot_base64 = snapshot_base64(&monitor_capture)?;
+
+    {
+        let state = app.state::<CaptureBufferState>();
+        *state.0.lock().map_err(|e| e.to_string())? = Some(monitor_capture.clone());
+    }
+
     overlay
         .set_position(PhysicalPosition::new(pos.x, pos.y))
         .map_err(|e| e.to_string())?;
@@ -71,6 +85,9 @@ fn show_capture_overlay(app: &AppHandle) -> Result<(), String> {
         scale_factor,
         width: size.width,
         height: size.height,
+        snapshot_base64,
+        snapshot_width: monitor_capture.image.width(),
+        snapshot_height: monitor_capture.image.height(),
     };
 
     overlay
@@ -87,6 +104,26 @@ fn hide_capture_overlay(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+fn clear_capture_buffer(app: &AppHandle) -> Result<(), String> {
+    let state = app.state::<CaptureBufferState>();
+    *state.0.lock().map_err(|e| e.to_string())? = None;
+    Ok(())
+}
+
+fn crop_from_buffer(
+    app: &AppHandle,
+    region: CaptureRegion,
+    scale_factor: f64,
+) -> Result<CaptureResult, String> {
+    let state = app.state::<CaptureBufferState>();
+    let guard = state.0.lock().map_err(|e| e.to_string())?;
+    let buffer = guard
+        .as_ref()
+        .ok_or_else(|| "No hay captura en memoria. Reinicia la selección.".to_string())?;
+
+    crop_region(buffer, &region, scale_factor)
+}
+
 #[tauri::command]
 fn start_capture_overlay(app: AppHandle) -> Result<(), String> {
     show_capture_overlay(&app)
@@ -94,10 +131,11 @@ fn start_capture_overlay(app: AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 fn capture_selection(
+    app: AppHandle,
     region: CaptureRegion,
     scale_factor: f64,
 ) -> Result<CaptureResult, String> {
-    Ok(capture_screen_region(&region, scale_factor)?)
+    crop_from_buffer(&app, region, scale_factor)
 }
 
 #[tauri::command]
@@ -125,7 +163,7 @@ fn process_capture(
     region: CaptureRegion,
     scale_factor: f64,
 ) -> Result<ProcessCaptureResult, String> {
-    let capture = capture_selection(region, scale_factor)?;
+    let capture = crop_from_buffer(&app, region, scale_factor)?;
     let ocr = run_ocr_on_image(capture.image_base64.clone())?;
 
     let result = ProcessCaptureResult {
@@ -149,11 +187,13 @@ fn finish_capture(
 ) -> Result<ProcessCaptureResult, String> {
     let result = process_capture(app.clone(), region, scale_factor)?;
     hide_capture_overlay(&app)?;
+    clear_capture_buffer(&app)?;
     Ok(result)
 }
 
 #[tauri::command]
 fn cancel_capture(app: AppHandle) -> Result<(), String> {
+    clear_capture_buffer(&app)?;
     hide_capture_overlay(&app)
 }
 
@@ -167,6 +207,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .manage(CaptureBufferState(Mutex::new(None)))
         .setup(|app| {
             #[cfg(desktop)]
             {

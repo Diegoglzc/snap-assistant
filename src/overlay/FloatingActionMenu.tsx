@@ -30,6 +30,7 @@ interface FloatingActionMenuProps {
   selection: SelectionRect;
   session: ProcessCaptureResult | null;
   ocrLoading: boolean;
+  captureError: string | null;
   onClose: () => void;
 }
 
@@ -73,6 +74,7 @@ export default function FloatingActionMenu({
   selection,
   session,
   ocrLoading,
+  captureError,
   onClose,
 }: FloatingActionMenuProps) {
   const [activeCategory, setActiveCategory] = useState<MenuCategoryId>("text");
@@ -123,13 +125,13 @@ export default function FloatingActionMenu({
   };
 
   useEffect(() => {
-    if (ocrLoading || guardrailsApplied.current) return;
+    if (ocrLoading || guardrailsApplied.current || captureError) return;
     guardrailsApplied.current = true;
 
     if (!hasText && hasCapturedImage) {
       setActiveCategory("vision");
     }
-  }, [ocrLoading, hasText, hasCapturedImage]);
+  }, [ocrLoading, hasText, hasCapturedImage, captureError]);
 
   useEffect(
     () => () => {
@@ -142,6 +144,8 @@ export default function FloatingActionMenu({
     categoryId: MenuCategoryId,
     actionId: string,
   ): boolean => {
+    if (captureError) return true;
+
     if (categoryId === "vision" || categoryId === "shop") {
       return !hasCapturedImage;
     }
@@ -176,6 +180,7 @@ export default function FloatingActionMenu({
   };
 
   const isCategoryDimmed = (categoryId: MenuCategoryId) => {
+    if (captureError) return categoryId !== "text";
     if (categoryId === "data") {
       return !analysis.hasNumbers && !hasCapturedImage;
     }
@@ -391,9 +396,20 @@ export default function FloatingActionMenu({
           </div>
 
           <div className="px-3 py-3">
+            {captureError && (
+              <div
+                role="alert"
+                className="mb-3 rounded-xl border border-red-400/40 bg-red-500/10 px-3 py-3 text-sm text-red-100"
+              >
+                <p className="font-medium text-red-200">Error de captura</p>
+                <p className="mt-1 whitespace-pre-wrap">{captureError}</p>
+              </div>
+            )}
+
             {activeCategoryData && (
               <div className="animate-submenu-reveal space-y-2">
-                {(activeCategoryData.id === "text" || activeCategoryData.id === "data") && (
+                {(activeCategoryData.id === "text" || activeCategoryData.id === "data") &&
+                  !captureError && (
                   <div className="rounded-xl border border-white/10 bg-slate-900/80 px-3 py-2 text-xs text-slate-200">
                     {ocrLoading ? (
                       <p className="flex items-center gap-2 text-slate-400">

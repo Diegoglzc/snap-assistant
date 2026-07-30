@@ -1,12 +1,12 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import GeminiModelSelector from "./overlay/GeminiModelSelector";
+import OpenAIModelSelector from "./overlay/OpenAIModelSelector";
 import {
-  getDefaultGeminiModel,
-  setDefaultGeminiModel,
-  type GeminiModelId,
-} from "./overlay/geminiPrefs";
+  getDefaultOpenAIModel,
+  setDefaultOpenAIModel,
+  type OpenAIModelId,
+} from "./overlay/openaiPrefs";
 import TranslateLanguageSelector from "./overlay/TranslateLanguageSelector";
 import {
   getDefaultTargetLanguage,
@@ -33,8 +33,8 @@ function App() {
   const [error, setError] = useState<string | null>(null);
   const [defaultTargetLanguage, setDefaultTargetLanguageState] =
     useState<TargetLanguageCode>(getDefaultTargetLanguage);
-  const [defaultGeminiModel, setDefaultGeminiModelState] =
-    useState<GeminiModelId>(getDefaultGeminiModel);
+  const [defaultOpenAIModel, setDefaultOpenAIModelState] =
+    useState<OpenAIModelId>(getDefaultOpenAIModel);
 
   useEffect(() => {
     const unlisten = listen<ProcessCaptureResult>("capture-complete", (event) => {
@@ -61,9 +61,9 @@ function App() {
     setDefaultTargetLanguage(code);
   }
 
-  function handleDefaultGeminiModelChange(model: GeminiModelId) {
-    setDefaultGeminiModelState(model);
-    setDefaultGeminiModel(model);
+  function handleDefaultOpenAIModelChange(model: OpenAIModelId) {
+    setDefaultOpenAIModelState(model);
+    setDefaultOpenAIModel(model);
   }
 
   return (
@@ -80,7 +80,7 @@ function App() {
         </p>
         <p className="note">
           Tras seleccionar una región verás un menú flotante con OCR local
-          (Apple Vision) y funciones inteligentes vía Gemini.
+          (Apple Vision) y funciones inteligentes vía OpenAI.
         </p>
       </section>
 
@@ -94,14 +94,14 @@ function App() {
           Idioma de salida predeterminado para traducciones. Puedes cambiarlo
           también en el menú flotante antes de traducir.
         </p>
-        <GeminiModelSelector
-          value={defaultGeminiModel}
-          onChange={handleDefaultGeminiModelChange}
+        <OpenAIModelSelector
+          value={defaultOpenAIModel}
+          onChange={handleDefaultOpenAIModelChange}
         />
         <p className="note">
-          Modelo de Gemini para Visión IA, Shop y acciones de texto cuando el
+          Modelo de OpenAI para Visión IA, Shop y acciones de texto cuando el
           OCR local no detecta contenido. Requiere{" "}
-          <code>VITE_GEMINI_API_KEY</code> en tu archivo <code>.env</code>.
+          <code>VITE_OPENAI_API_KEY</code> en tu archivo <code>.env</code>.
         </p>
       </section>
 

@@ -4,6 +4,9 @@ export interface OverlayContext {
   scale_factor: number;
   width: number;
   height: number;
+  snapshot_base64: string;
+  snapshot_width: number;
+  snapshot_height: number;
 }
 
 export interface SelectionRect {
@@ -30,7 +33,7 @@ export interface ProcessCaptureResult {
   ocr_confidence: number;
 }
 
-export type OverlayPhase = "idle" | "selecting" | "menu";
+export type OverlayPhase = "idle" | "selecting" | "capturing" | "menu";
 
 export type MenuCategoryId = "text" | "data" | "vision" | "shop" | "events";
 
