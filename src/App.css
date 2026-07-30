@@ -51,6 +51,40 @@
   font-size: 1rem;
 }
 
+.shortcut-recorder {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+}
+
+.shortcut-recorder-label {
+  font-size: 14px;
+  color: #444;
+}
+
+.shortcut-recorder-value {
+  font-family: inherit;
+  font-size: 14px;
+  padding: 2px 8px;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  background: #f8f8f8;
+}
+
+.shortcut-recorder button.recording {
+  border-color: #7c3aed;
+  color: #5b21b6;
+}
+
+.shortcut-recorder-error {
+  flex-basis: 100%;
+  margin: 0;
+  font-size: 13px;
+  color: #b00020;
+}
+
 .capture-section {
   display: flex;
   flex-direction: column;

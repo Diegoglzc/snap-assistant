@@ -236,7 +236,7 @@ export default function CaptureOverlay() {
           src={snapshotSrc}
           alt=""
           draggable={false}
-          className="pointer-events-none fixed inset-0 h-full w-full select-none object-fill"
+          className="pointer-events-none fixed inset-0 h-full w-full select-none object-cover"
         />
       )}
 

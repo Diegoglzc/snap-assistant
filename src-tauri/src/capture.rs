@@ -38,16 +38,87 @@ pub struct MonitorCapture {
     pub scale_factor: f64,
 }
 
-fn find_monitor_by_coords(monitor_x: i32, monitor_y: i32) -> Result<Monitor, String> {
+#[derive(Debug, Clone, Copy)]
+pub struct MonitorBounds {
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+}
+
+fn rect_overlap_area(
+    target_x: i32,
+    target_y: i32,
+    target_width: u32,
+    target_height: u32,
+    candidate_x: i32,
+    candidate_y: i32,
+    candidate_width: u32,
+    candidate_height: u32,
+) -> i64 {
+    let target_right = target_x as i64 + target_width as i64;
+    let target_bottom = target_y as i64 + target_height as i64;
+    let candidate_right = candidate_x as i64 + candidate_width as i64;
+    let candidate_bottom = candidate_y as i64 + candidate_height as i64;
+
+    let overlap_width = target_right.min(candidate_right) - target_x.max(candidate_x) as i64;
+    let overlap_height = target_bottom.min(candidate_bottom) - target_y.max(candidate_y) as i64;
+
+    overlap_width.max(0) * overlap_height.max(0)
+}
+
+pub fn debug_log_xcap_monitors() {
+    match Monitor::all() {
+        Ok(monitors) => {
+            eprintln!("=== Monitor debug: xcap Monitor::all() ===");
+            for (index, monitor) in monitors.iter().enumerate() {
+                eprintln!(
+                    "  [xcap #{index}] x={}, y={}, width={}, height={}",
+                    monitor.x().unwrap_or(0),
+                    monitor.y().unwrap_or(0),
+                    monitor.width().unwrap_or(0),
+                    monitor.height().unwrap_or(0),
+                );
+            }
+        }
+        Err(error) => {
+            eprintln!("=== Monitor debug: xcap Monitor::all() failed: {error} ===");
+        }
+    }
+}
+
+fn find_monitor_by_bounds(bounds: MonitorBounds) -> Result<(Monitor, i64), String> {
     let monitors = Monitor::all().map_err(|e| e.to_string())?;
 
-    monitors
-        .into_iter()
-        .find(|monitor| {
-            monitor.x().unwrap_or(0) == monitor_x && monitor.y().unwrap_or(0) == monitor_y
-        })
-        .or_else(|| Monitor::all().ok()?.into_iter().next())
-        .ok_or_else(|| "Monitor not found".to_string())
+    let mut best_match: Option<(Monitor, i64)> = None;
+
+    for monitor in monitors {
+        let monitor_x = monitor.x().unwrap_or(0);
+        let monitor_y = monitor.y().unwrap_or(0);
+        let monitor_width = monitor.width().unwrap_or(0);
+        let monitor_height = monitor.height().unwrap_or(0);
+
+        let overlap = rect_overlap_area(
+            bounds.x,
+            bounds.y,
+            bounds.width,
+            bounds.height,
+            monitor_x,
+            monitor_y,
+            monitor_width,
+            monitor_height,
+        );
+
+        eprintln!(
+            "  [xcap match] x={monitor_x}, y={monitor_y}, width={monitor_width}, height={monitor_height}, overlap={overlap}"
+        );
+
+        if best_match.as_ref().map_or(true, |( _, best_overlap)| overlap > *best_overlap) {
+            best_match = Some((monitor, overlap));
+        }
+    }
+
+    best_match.ok_or_else(|| "Monitor not found".to_string())
 }
 
 fn effective_scale(monitor: &Monitor, full_image: &RgbaImage, scale_factor: f64) -> f64 {
@@ -102,8 +173,34 @@ fn encode_png_base64(image: &RgbaImage) -> Result<String, String> {
     Ok(STANDARD.encode(&png_bytes))
 }
 
-pub fn capture_monitor(monitor_x: i32, monitor_y: i32, scale_factor: f64) -> Result<MonitorCapture, String> {
-    let monitor = find_monitor_by_coords(monitor_x, monitor_y)?;
+pub fn capture_monitor(
+    monitor_x: i32,
+    monitor_y: i32,
+    monitor_width: u32,
+    monitor_height: u32,
+    scale_factor: f64,
+) -> Result<MonitorCapture, String> {
+    let bounds = MonitorBounds {
+        x: monitor_x,
+        y: monitor_y,
+        width: monitor_width,
+        height: monitor_height,
+    };
+
+    eprintln!(
+        "=== Monitor debug: matching xcap monitor for Tauri bounds x={monitor_x}, y={monitor_y}, width={monitor_width}, height={monitor_height} ==="
+    );
+
+    let (monitor, overlap) = find_monitor_by_bounds(bounds)?;
+
+    eprintln!(
+        "=== Monitor debug: selected xcap monitor x={}, y={}, width={}, height={}, overlap={overlap} ===",
+        monitor.x().unwrap_or(0),
+        monitor.y().unwrap_or(0),
+        monitor.width().unwrap_or(0),
+        monitor.height().unwrap_or(0),
+    );
+
     let full_image = monitor
         .capture_image()
         .map_err(|e| format!("Failed to capture monitor: {e}"))?;

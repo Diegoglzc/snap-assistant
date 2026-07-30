@@ -2,25 +2,56 @@ import { GoogleGenAI } from "@google/genai";
 import OpenAI from "openai";
 import {
   getDefaultGeminiModel,
-  getGeminiApiKey,
   normalizeGeminiModelId,
   type GeminiModelId,
 } from "./geminiPrefs";
 import {
   getDefaultOpenAIModel,
-  getOpenAIApiKey,
   normalizeOpenAIModelId,
   type OpenAIModelId,
 } from "./openaiPrefs";
 import type { TargetLanguageCode } from "./translationPrefs";
 import { getLanguageLabel } from "./translationPrefs";
 
-const openai = new OpenAI({
-  apiKey: import.meta.env.VITE_OPENAI_API_KEY,
-  dangerouslyAllowBrowser: true,
-});
+let openaiClient: OpenAI | null = null;
+let geminiClient: GoogleGenAI | null = null;
 
-const geminiAi = new GoogleGenAI({ apiKey: import.meta.env.VITE_GEMINI_API_KEY });
+function getOpenAIClient(): OpenAI {
+  if (openaiClient) return openaiClient;
+
+  const apiKey = import.meta.env.VITE_OPENAI_API_KEY?.trim();
+  if (!apiKey) {
+    throw new Error("Configura tu API key de OpenAI en Ajustes");
+  }
+
+  try {
+    openaiClient = new OpenAI({
+      apiKey,
+      dangerouslyAllowBrowser: true,
+    });
+  } catch {
+    throw new Error("Configura tu API key de OpenAI en Ajustes");
+  }
+
+  return openaiClient;
+}
+
+function getGeminiClient(): GoogleGenAI {
+  if (geminiClient) return geminiClient;
+
+  const apiKey = import.meta.env.VITE_GEMINI_API_KEY?.trim();
+  if (!apiKey) {
+    throw new Error("Configura tu API key de Gemini en Ajustes");
+  }
+
+  try {
+    geminiClient = new GoogleGenAI({ apiKey });
+  } catch {
+    throw new Error("Configura tu API key de Gemini en Ajustes");
+  }
+
+  return geminiClient;
+}
 
 export interface TranslateResponse {
   detected_language: string;
@@ -32,7 +63,7 @@ async function generateContent(
   imageBase64?: string,
   model?: OpenAIModelId,
 ): Promise<string> {
-  getOpenAIApiKey();
+  const client = getOpenAIClient();
   const modelId = model ? normalizeOpenAIModelId(model) : getDefaultOpenAIModel();
 
   const content: OpenAI.Chat.Completions.ChatCompletionContentPart[] = [
@@ -48,7 +79,7 @@ async function generateContent(
     });
   }
 
-  const response = await openai.chat.completions.create({
+  const response = await client.chat.completions.create({
     model: modelId,
     messages: [{ role: "user", content }],
     temperature: 0.4,
@@ -69,7 +100,7 @@ async function generateContentGemini(
   imageBase64?: string,
   model: GeminiModelId = getDefaultGeminiModel(),
 ): Promise<string> {
-  getGeminiApiKey();
+  const client = getGeminiClient();
   const modelId = normalizeGeminiModelId(model);
 
   const parts: Array<{ text?: string; inlineData?: { mimeType: string; data: string } }> =
@@ -84,7 +115,7 @@ async function generateContentGemini(
     });
   }
 
-  const response = await geminiAi.models.generateContent({
+  const response = await client.models.generateContent({
     model: modelId,
     contents: [{ parts }],
     config: {

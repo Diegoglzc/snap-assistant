@@ -7,7 +7,13 @@ import {
   setDefaultOpenAIModel,
   type OpenAIModelId,
 } from "./overlay/openaiPrefs";
+import ShortcutRecorder from "./overlay/ShortcutRecorder";
 import TranslateLanguageSelector from "./overlay/TranslateLanguageSelector";
+import {
+  applyStoredGlobalShortcutIfNeeded,
+  formatShortcutDisplay,
+  getStoredGlobalShortcut,
+} from "./overlay/shortcutPrefs";
 import {
   getDefaultTargetLanguage,
   setDefaultTargetLanguage,
@@ -35,6 +41,15 @@ function App() {
     useState<TargetLanguageCode>(getDefaultTargetLanguage);
   const [defaultOpenAIModel, setDefaultOpenAIModelState] =
     useState<OpenAIModelId>(getDefaultOpenAIModel);
+  const [globalShortcutLabel, setGlobalShortcutLabel] = useState(() =>
+    formatShortcutDisplay(getStoredGlobalShortcut()),
+  );
+
+  useEffect(() => {
+    void applyStoredGlobalShortcutIfNeeded().catch((err) => {
+      setError(String(err));
+    });
+  }, []);
 
   useEffect(() => {
     const unlisten = listen<ProcessCaptureResult>("capture-complete", (event) => {
@@ -76,7 +91,7 @@ function App() {
           Iniciar captura
         </button>
         <p className="shortcuts">
-          Atajos globales: <kbd>⌘⇧4</kbd> o <kbd>⌘⌥S</kbd>
+          Atajo global: <kbd>{globalShortcutLabel}</kbd>
         </p>
         <p className="note">
           Tras seleccionar una región verás un menú flotante con OCR local
@@ -86,6 +101,15 @@ function App() {
 
       <section className="settings-section">
         <h2>Preferencias</h2>
+        <ShortcutRecorder
+          onChange={(shortcut) =>
+            setGlobalShortcutLabel(formatShortcutDisplay(shortcut))
+          }
+        />
+        <p className="note">
+          Combinación de teclas para abrir la captura desde cualquier aplicación.
+          El cambio se aplica al instante, sin reiniciar.
+        </p>
         <TranslateLanguageSelector
           value={defaultTargetLanguage}
           onChange={handleDefaultLanguageChange}

@@ -15,6 +15,7 @@ export default defineConfig(async () => ({
       input: {
         main: resolve(__dirname, "index.html"),
         overlay: resolve(__dirname, "overlay.html"),
+        monitorPicker: resolve(__dirname, "monitor-picker.html"),
       },
     },
   },

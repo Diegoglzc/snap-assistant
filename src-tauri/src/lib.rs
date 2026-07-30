@@ -1,11 +1,17 @@
 mod capture;
+mod monitor_picker;
 mod ocr;
 
 use base64::{engine::general_purpose::STANDARD, Engine};
-use capture::{crop_region, capture_monitor, snapshot_base64, CaptureRegion, CaptureResult, MonitorCapture};
+use capture::{crop_region, capture_monitor, debug_log_xcap_monitors, snapshot_base64, CaptureRegion, CaptureResult, MonitorCapture};
+use monitor_picker::{
+    close_monitor_picker_windows, focus_picker_at_cursor, monitor_descriptor, show_monitor_picker,
+    MonitorDescriptor, MonitorPickerState,
+};
 use ocr::OcrResult;
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize};
+use std::str::FromStr;
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 
 struct CaptureBufferState(Mutex<Option<MonitorCapture>>);
@@ -37,54 +43,58 @@ pub struct ProcessCaptureResult {
     pub ocr_confidence: f32,
 }
 
-fn show_capture_overlay(app: &AppHandle) -> Result<(), String> {
+async fn show_capture_overlay_for_monitor(
+    app: AppHandle,
+    monitor: MonitorDescriptor,
+) -> Result<(), String> {
     let overlay = app
         .get_webview_window("overlay")
         .ok_or("Overlay window not found")?;
 
-    let cursor = overlay.cursor_position().map_err(|e| e.to_string())?;
-    let monitors = overlay.available_monitors().map_err(|e| e.to_string())?;
+    let monitor_x = monitor.x;
+    let monitor_y = monitor.y;
+    let monitor_width = monitor.width;
+    let monitor_height = monitor.height;
+    let scale_factor = monitor.scale_factor;
 
-    let monitor = monitors
-        .iter()
-        .find(|m| {
-            let pos = m.position();
-            let size = m.size();
-            cursor.x >= pos.x as f64
-                && cursor.x < pos.x as f64 + size.width as f64
-                && cursor.y >= pos.y as f64
-                && cursor.y < pos.y as f64 + size.height as f64
-        })
-        .or_else(|| monitors.first())
-        .ok_or("No monitor found")?;
+    eprintln!(
+        "=== Monitor debug: selected Tauri monitor x={monitor_x}, y={monitor_y}, width={monitor_width}, height={monitor_height}, scale={scale_factor} ==="
+    );
 
-    let pos = monitor.position();
-    let size = monitor.size();
-    let scale_factor = monitor.scale_factor();
-
-    let monitor_capture = capture_monitor(pos.x, pos.y, scale_factor)?;
-    let snapshot_base64 = snapshot_base64(&monitor_capture)?;
+    let (monitor_capture, snapshot_base64) = tauri::async_runtime::spawn_blocking(move || {
+        let monitor_capture = capture_monitor(
+            monitor_x,
+            monitor_y,
+            monitor_width,
+            monitor_height,
+            scale_factor,
+        )?;
+        let snapshot_base64 = snapshot_base64(&monitor_capture)?;
+        Ok::<_, String>((monitor_capture, snapshot_base64))
+    })
+    .await
+    .map_err(|error| format!("Capture task failed: {error}"))??;
 
     {
         let state = app.state::<CaptureBufferState>();
-        *state.0.lock().map_err(|e| e.to_string())? = Some(monitor_capture.clone());
+        *state.0.lock().map_err(|error| error.to_string())? = Some(monitor_capture.clone());
     }
 
     overlay
-        .set_position(PhysicalPosition::new(pos.x, pos.y))
-        .map_err(|e| e.to_string())?;
+        .set_position(PhysicalPosition::new(monitor_x, monitor_y))
+        .map_err(|error| error.to_string())?;
     overlay
-        .set_size(PhysicalSize::new(size.width, size.height))
-        .map_err(|e| e.to_string())?;
-    overlay.show().map_err(|e| e.to_string())?;
-    overlay.set_focus().map_err(|e| e.to_string())?;
+        .set_size(PhysicalSize::new(monitor_width, monitor_height))
+        .map_err(|error| error.to_string())?;
+    overlay.show().map_err(|error| error.to_string())?;
+    overlay.set_focus().map_err(|error| error.to_string())?;
 
     let context = OverlayContext {
-        monitor_x: pos.x,
-        monitor_y: pos.y,
+        monitor_x,
+        monitor_y,
         scale_factor,
-        width: size.width,
-        height: size.height,
+        width: monitor_width,
+        height: monitor_height,
         snapshot_base64,
         snapshot_width: monitor_capture.image.width(),
         snapshot_height: monitor_capture.image.height(),
@@ -92,9 +102,69 @@ fn show_capture_overlay(app: &AppHandle) -> Result<(), String> {
 
     overlay
         .emit("overlay-show", context)
-        .map_err(|e| e.to_string())?;
+        .map_err(|error| error.to_string())?;
 
     Ok(())
+}
+
+async fn begin_capture_flow(app: AppHandle) -> Result<(), String> {
+    let _ = close_monitor_picker_windows(&app);
+    let _ = hide_capture_overlay(&app);
+    let _ = clear_capture_buffer(&app);
+
+    let anchor = app
+        .get_webview_window("overlay")
+        .or_else(|| app.get_webview_window("main"))
+        .ok_or("No anchor window found")?;
+
+    let monitors = anchor.available_monitors().map_err(|error| error.to_string())?;
+
+    eprintln!("=== Monitor debug: Tauri available_monitors() ===");
+    for (index, monitor) in monitors.iter().enumerate() {
+        let position = monitor.position();
+        let size = monitor.size();
+        eprintln!(
+            "  [tauri #{index}] x={}, y={}, width={}, height={}, scale={}",
+            position.x,
+            position.y,
+            size.width,
+            size.height,
+            monitor.scale_factor(),
+        );
+    }
+
+    debug_log_xcap_monitors();
+
+    let monitor = monitors
+        .first()
+        .ok_or("No monitor found")?;
+
+    if monitors.len() <= 1 {
+        return show_capture_overlay_for_monitor(app, monitor_descriptor(monitor, 0)).await;
+    }
+
+    let descriptors: Vec<MonitorDescriptor> = monitors
+        .iter()
+        .enumerate()
+        .map(|(index, monitor)| monitor_descriptor(monitor, index))
+        .collect();
+
+    show_monitor_picker(&app, descriptors.clone())?;
+    focus_picker_at_cursor(&app, &descriptors)?;
+
+    Ok(())
+}
+
+async fn show_capture_overlay(app: AppHandle) -> Result<(), String> {
+    begin_capture_flow(app).await
+}
+
+fn spawn_show_capture_overlay(app: AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        if let Err(error) = show_capture_overlay(app).await {
+            eprintln!("Failed to show capture overlay: {error}");
+        }
+    });
 }
 
 fn hide_capture_overlay(app: &AppHandle) -> Result<(), String> {
@@ -126,7 +196,8 @@ fn crop_from_buffer(
 
 #[tauri::command]
 fn start_capture_overlay(app: AppHandle) -> Result<(), String> {
-    show_capture_overlay(&app)
+    spawn_show_capture_overlay(app);
+    Ok(())
 }
 
 #[tauri::command]
@@ -192,9 +263,74 @@ fn finish_capture(
 }
 
 #[tauri::command]
+async fn confirm_monitor_selection(app: AppHandle, monitor_index: usize) -> Result<(), String> {
+    let monitor = {
+        let state = app.state::<MonitorPickerState>();
+        let monitors = state.monitors.lock().map_err(|error| error.to_string())?;
+        monitors
+            .get(monitor_index)
+            .cloned()
+            .ok_or_else(|| format!("Invalid monitor index: {monitor_index}"))?
+    };
+
+    close_monitor_picker_windows(&app)?;
+    show_capture_overlay_for_monitor(app, monitor).await
+}
+
+#[tauri::command]
+fn cancel_monitor_picker(app: AppHandle) -> Result<(), String> {
+    close_monitor_picker_windows(&app)
+}
+
+#[tauri::command]
 fn cancel_capture(app: AppHandle) -> Result<(), String> {
     clear_capture_buffer(&app)?;
     hide_capture_overlay(&app)
+}
+
+fn normalize_modifier(modifier: &str) -> Result<&'static str, String> {
+    match modifier.to_ascii_lowercase().as_str() {
+        "super" | "cmd" | "command" | "meta" => Ok("Super"),
+        "shift" => Ok("Shift"),
+        "alt" | "option" => Ok("Alt"),
+        "control" | "ctrl" => Ok("Control"),
+        _ => Err(format!("Unknown modifier: {modifier}")),
+    }
+}
+
+fn build_shortcut_from_parts(modifiers: &[String], key: &str) -> Result<Shortcut, String> {
+    let mut parts = Vec::with_capacity(modifiers.len() + 1);
+    for modifier in modifiers {
+        parts.push(normalize_modifier(modifier)?.to_string());
+    }
+    parts.push(key.to_string());
+
+    let shortcut_str = parts.join("+");
+    Shortcut::from_str(&shortcut_str)
+        .map_err(|error| format!("Invalid shortcut '{shortcut_str}': {error}"))
+}
+
+#[tauri::command]
+fn update_global_shortcut(
+    app: AppHandle,
+    modifiers: Vec<String>,
+    key: String,
+) -> Result<(), String> {
+    if modifiers.is_empty() {
+        return Err("At least one modifier is required".into());
+    }
+
+    let shortcut = build_shortcut_from_parts(&modifiers, &key)?;
+
+    app.global_shortcut()
+        .unregister_all()
+        .map_err(|error| error.to_string())?;
+
+    app.global_shortcut()
+        .register(shortcut)
+        .map_err(|error| error.to_string())?;
+
+    Ok(())
 }
 
 fn load_env() {
@@ -208,26 +344,25 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(CaptureBufferState(Mutex::new(None)))
+        .manage(MonitorPickerState::new())
         .setup(|app| {
             #[cfg(desktop)]
             {
-                let shortcuts = [
-                    Shortcut::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::Digit4),
-                    Shortcut::new(Some(Modifiers::SUPER | Modifiers::ALT), Code::KeyS),
-                ];
+                let default_shortcut =
+                    Shortcut::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::Digit4);
 
                 app.handle().plugin(
                     tauri_plugin_global_shortcut::Builder::new()
                         .with_handler(|app, _shortcut, event| {
                             if event.state == ShortcutState::Pressed {
-                                let _ = show_capture_overlay(app);
+                                spawn_show_capture_overlay(app.clone());
                             }
                         })
                         .build(),
                 )?;
 
                 app.global_shortcut()
-                    .register_multiple(shortcuts)
+                    .register(default_shortcut)
                     .map_err(|e| e.to_string())?;
             }
 
@@ -239,7 +374,10 @@ pub fn run() {
             run_ocr_on_image,
             process_capture,
             finish_capture,
-            cancel_capture
+            cancel_capture,
+            confirm_monitor_selection,
+            cancel_monitor_picker,
+            update_global_shortcut
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

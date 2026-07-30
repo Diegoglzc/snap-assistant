@@ -1,0 +1,12 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "monitor-picker",
+  "description": "Capability for monitor picker overlay windows",
+  "windows": ["monitor-picker-*"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-close",
+    "core:window:allow-set-focus",
+    "core:event:allow-listen"
+  ]
+}
