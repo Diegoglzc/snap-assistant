@@ -1,5 +1,5 @@
 use std::sync::Mutex;
-use tauri::{AppHandle, Manager, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 
 #[derive(Clone, serde::Serialize)]
 pub struct MonitorDescriptor {
@@ -69,6 +69,9 @@ fn create_picker_window(app: &AppHandle, monitor: &MonitorDescriptor, total: usi
         monitor.index, total
     );
 
+    let logical_width = (monitor.width as f64 / monitor.scale_factor) as u32;
+    let logical_height = (monitor.height as f64 / monitor.scale_factor) as u32;
+
     let window = WebviewWindowBuilder::new(app, &label, WebviewUrl::App(url.into()))
         .title("Seleccionar pantalla")
         .transparent(true)
@@ -76,16 +79,12 @@ fn create_picker_window(app: &AppHandle, monitor: &MonitorDescriptor, total: usi
         .always_on_top(true)
         .skip_taskbar(true)
         .resizable(false)
+        .position(monitor.x as f64, monitor.y as f64)
+        .inner_size(logical_width as f64, logical_height as f64)
         .visible(false)
         .build()
         .map_err(|error| error.to_string())?;
 
-    window
-        .set_position(PhysicalPosition::new(monitor.x, monitor.y))
-        .map_err(|error| error.to_string())?;
-    window
-        .set_size(PhysicalSize::new(monitor.width, monitor.height))
-        .map_err(|error| error.to_string())?;
     window.show().map_err(|error| error.to_string())?;
 
     Ok(())

@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 
 function readPickerParams() {
   const params = new URLSearchParams(window.location.search);
@@ -28,11 +27,6 @@ export default function MonitorPicker() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
 
-  const handleMouseEnter = () => {
-    setHovered(true);
-    void getCurrentWebviewWindow().setFocus();
-  };
-
   const handleClick = () => {
     void invoke("confirm_monitor_selection", { monitorIndex: index });
   };
@@ -44,15 +38,20 @@ export default function MonitorPicker() {
           ? "bg-violet-500/12 shadow-[inset_0_0_0_3px_rgba(167,139,250,0.75)]"
           : "bg-black/5"
       }`}
-      onMouseEnter={handleMouseEnter}
+      onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
       onClick={handleClick}
     >
-      {hovered && (
-        <div className="pointer-events-none fixed left-1/2 top-4 -translate-x-1/2 rounded-full border border-violet-300/25 bg-slate-900/90 px-4 py-2 text-sm text-slate-100 shadow-md">
-          Pantalla {index + 1} de {total} · Clic para capturar · Esc para cancelar
+      <div className="pointer-events-none fixed left-1/2 top-4 flex -translate-x-1/2 flex-col items-center gap-2">
+        <div className="rounded-full border border-slate-400/25 bg-slate-900/85 px-4 py-2 text-sm text-slate-200 shadow-md">
+          Selecciona la pantalla donde deseas capturar
         </div>
-      )}
+        {hovered && (
+          <div className="rounded-full border border-violet-300/25 bg-slate-900/90 px-4 py-2 text-sm text-slate-100 shadow-md">
+            Pantalla {index + 1} de {total} · Clic para capturar · Esc para cancelar
+          </div>
+        )}
+      </div>
     </div>
   );
 }

@@ -83,8 +83,11 @@ async fn show_capture_overlay_for_monitor(
     overlay
         .set_position(PhysicalPosition::new(monitor_x, monitor_y))
         .map_err(|error| error.to_string())?;
+
+    let window_width = (monitor_width as f64 / scale_factor) as u32;
+    let window_height = (monitor_height as f64 / scale_factor) as u32;
     overlay
-        .set_size(PhysicalSize::new(monitor_width, monitor_height))
+        .set_size(PhysicalSize::new(window_width, window_height))
         .map_err(|error| error.to_string())?;
     overlay.show().map_err(|error| error.to_string())?;
     overlay.set_focus().map_err(|error| error.to_string())?;
