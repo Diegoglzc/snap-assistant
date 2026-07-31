@@ -10,7 +10,7 @@ use monitor_picker::{
 };
 use ocr::OcrResult;
 use std::sync::Mutex;
-use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Emitter, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 use std::str::FromStr;
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 
@@ -371,12 +371,32 @@ fn load_env() {
     let _ = dotenvy::dotenv();
 }
 
+fn show_main_window(app: &AppHandle) {
+    let Some(main) = app.get_webview_window("main") else {
+        return;
+    };
+
+    let _ = main.unminimize();
+    let _ = main.show();
+    let _ = main.set_focus();
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     load_env();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .on_window_event(|window, event| {
+            if window.label() != "main" {
+                return;
+            }
+
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let _ = window.hide();
+            }
+        })
         .manage(CaptureBufferState(Mutex::new(None)))
         .manage(MonitorPickerState::new())
         .setup(|app| {
@@ -413,6 +433,12 @@ pub fn run() {
             cancel_monitor_picker,
             update_global_shortcut
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while running tauri application")
+        .run(|app_handle, event| {
+            #[cfg(target_os = "macos")]
+            if let RunEvent::Reopen { has_visible_windows: false, .. } = event {
+                show_main_window(app_handle);
+            }
+        });
 }
