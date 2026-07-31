@@ -180,18 +180,21 @@ pub fn capture_monitor(
     monitor_height: u32,
     scale_factor: f64,
 ) -> Result<MonitorCapture, String> {
-    let bounds = MonitorBounds {
+    let match_width = (monitor_width as f64 / scale_factor) as u32;
+    let match_height = (monitor_height as f64 / scale_factor) as u32;
+
+    let overlap_bounds = MonitorBounds {
         x: monitor_x,
         y: monitor_y,
-        width: monitor_width,
-        height: monitor_height,
+        width: match_width,
+        height: match_height,
     };
 
     eprintln!(
-        "=== Monitor debug: matching xcap monitor for Tauri bounds x={monitor_x}, y={monitor_y}, width={monitor_width}, height={monitor_height} ==="
+        "=== Monitor debug: matching xcap monitor for Tauri bounds x={monitor_x}, y={monitor_y}, match_size={match_width}x{match_height} (physical {monitor_width}x{monitor_height}) ==="
     );
 
-    let (monitor, overlap) = find_monitor_by_bounds(bounds)?;
+    let (monitor, overlap) = find_monitor_by_bounds(overlap_bounds)?;
 
     eprintln!(
         "=== Monitor debug: selected xcap monitor x={}, y={}, width={}, height={}, overlap={overlap} ===",

@@ -17,19 +17,6 @@
         "title": "snap-assistant",
         "width": 800,
         "height": 600
-      },
-      {
-        "label": "overlay",
-        "title": "Capture Overlay",
-        "url": "overlay.html",
-        "visible": false,
-        "decorations": false,
-        "transparent": true,
-        "alwaysOnTop": true,
-        "skipTaskbar": true,
-        "resizable": false,
-        "width": 800,
-        "height": 600
       }
     ],
     "security": {

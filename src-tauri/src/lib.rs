@@ -10,7 +10,7 @@ use monitor_picker::{
 };
 use ocr::OcrResult;
 use std::sync::Mutex;
-use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize};
+use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 use std::str::FromStr;
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 
@@ -43,23 +43,67 @@ pub struct ProcessCaptureResult {
     pub ocr_confidence: f32,
 }
 
+const OVERLAY_WINDOW_LABEL: &str = "overlay";
+
+fn close_capture_overlay(app: &AppHandle) -> Result<(), String> {
+    if let Some(overlay) = app.get_webview_window(OVERLAY_WINDOW_LABEL) {
+        overlay.close().map_err(|error| error.to_string())?;
+    }
+
+    Ok(())
+}
+
+fn create_capture_overlay_window(
+    app: &AppHandle,
+    monitor_x: i32,
+    monitor_y: i32,
+    window_width: u32,
+    window_height: u32,
+) -> Result<tauri::WebviewWindow, String> {
+    close_capture_overlay(app)?;
+
+    WebviewWindowBuilder::new(
+        app,
+        OVERLAY_WINDOW_LABEL,
+        WebviewUrl::App("overlay.html".into()),
+    )
+    .title("Capture Overlay")
+    .transparent(true)
+    .decorations(false)
+    .always_on_top(true)
+    .skip_taskbar(true)
+    .resizable(false)
+    .position(monitor_x as f64, monitor_y as f64)
+    .inner_size(window_width as f64, window_height as f64)
+    .visible(false)
+    .build()
+    .map_err(|error| error.to_string())
+}
+
 async fn show_capture_overlay_for_monitor(
     app: AppHandle,
     monitor: MonitorDescriptor,
 ) -> Result<(), String> {
-    let overlay = app
-        .get_webview_window("overlay")
-        .ok_or("Overlay window not found")?;
-
     let monitor_x = monitor.x;
     let monitor_y = monitor.y;
     let monitor_width = monitor.width;
     let monitor_height = monitor.height;
     let scale_factor = monitor.scale_factor;
 
+    let window_width = (monitor_width as f64 / scale_factor) as u32;
+    let window_height = (monitor_height as f64 / scale_factor) as u32;
+
     eprintln!(
-        "=== Monitor debug: selected Tauri monitor x={monitor_x}, y={monitor_y}, width={monitor_width}, height={monitor_height}, scale={scale_factor} ==="
+        "=== Monitor debug: selected Tauri monitor x={monitor_x}, y={monitor_y}, width={monitor_width}, height={monitor_height}, scale={scale_factor}, window={window_width}x{window_height} ==="
     );
+
+    let overlay = create_capture_overlay_window(
+        &app,
+        monitor_x,
+        monitor_y,
+        window_width,
+        window_height,
+    )?;
 
     let (monitor_capture, snapshot_base64) = tauri::async_runtime::spawn_blocking(move || {
         let monitor_capture = capture_monitor(
@@ -80,18 +124,6 @@ async fn show_capture_overlay_for_monitor(
         *state.0.lock().map_err(|error| error.to_string())? = Some(monitor_capture.clone());
     }
 
-    overlay
-        .set_position(PhysicalPosition::new(monitor_x, monitor_y))
-        .map_err(|error| error.to_string())?;
-
-    let window_width = (monitor_width as f64 / scale_factor) as u32;
-    let window_height = (monitor_height as f64 / scale_factor) as u32;
-    overlay
-        .set_size(PhysicalSize::new(window_width, window_height))
-        .map_err(|error| error.to_string())?;
-    overlay.show().map_err(|error| error.to_string())?;
-    overlay.set_focus().map_err(|error| error.to_string())?;
-
     let context = OverlayContext {
         monitor_x,
         monitor_y,
@@ -103,6 +135,8 @@ async fn show_capture_overlay_for_monitor(
         snapshot_height: monitor_capture.image.height(),
     };
 
+    overlay.show().map_err(|error| error.to_string())?;
+    overlay.set_focus().map_err(|error| error.to_string())?;
     overlay
         .emit("overlay-show", context)
         .map_err(|error| error.to_string())?;
@@ -112,13 +146,12 @@ async fn show_capture_overlay_for_monitor(
 
 async fn begin_capture_flow(app: AppHandle) -> Result<(), String> {
     let _ = close_monitor_picker_windows(&app);
-    let _ = hide_capture_overlay(&app);
+    let _ = close_capture_overlay(&app);
     let _ = clear_capture_buffer(&app);
 
     let anchor = app
-        .get_webview_window("overlay")
-        .or_else(|| app.get_webview_window("main"))
-        .ok_or("No anchor window found")?;
+        .get_webview_window("main")
+        .ok_or("Main window not found")?;
 
     let monitors = anchor.available_monitors().map_err(|error| error.to_string())?;
 
@@ -171,10 +204,7 @@ fn spawn_show_capture_overlay(app: AppHandle) {
 }
 
 fn hide_capture_overlay(app: &AppHandle) -> Result<(), String> {
-    if let Some(overlay) = app.get_webview_window("overlay") {
-        overlay.hide().map_err(|e| e.to_string())?;
-    }
-    Ok(())
+    close_capture_overlay(app)
 }
 
 fn clear_capture_buffer(app: &AppHandle) -> Result<(), String> {
@@ -277,6 +307,7 @@ async fn confirm_monitor_selection(app: AppHandle, monitor_index: usize) -> Resu
     };
 
     close_monitor_picker_windows(&app)?;
+    tokio::time::sleep(std::time::Duration::from_millis(120)).await;
     show_capture_overlay_for_monitor(app, monitor).await
 }
 

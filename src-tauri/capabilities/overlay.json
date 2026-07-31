@@ -5,7 +5,7 @@
   "windows": ["overlay"],
   "permissions": [
     "core:default",
-    "core:window:allow-hide",
+    "core:window:allow-close",
     "core:window:allow-set-focus",
     "core:event:allow-listen",
     "core:event:allow-emit"
