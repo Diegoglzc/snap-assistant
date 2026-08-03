@@ -1,8 +1,10 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { MENU_CATEGORIES } from "./categories";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { classifyCaptureCategories, MENU_CATEGORIES } from "./categories";
 import { copyToClipboard } from "./clipboard";
 import {
+  geminiComparePrices,
   geminiExplainError,
+  geminiExtractCalendarEvent,
   geminiExtractList,
   geminiExtractListFromImage,
   geminiExtractNumbersFromImage,
@@ -12,7 +14,10 @@ import {
   geminiSummarizeFromImage,
   geminiTranslate,
   geminiTranslateFromImage,
+  SHOP_NO_PRODUCT_MESSAGE,
+  type ShopListing,
 } from "./gemini";
+import { buildEventIcs, buildTodoIcs, downloadIcsFile } from "./ics";
 import { computeMathOperation, type MathOperationId } from "./mathOperations";
 import { analyzeOcrText } from "./ocrAnalysis";
 import ResultBadge, { CopyToast } from "./ResultBadge";
@@ -43,6 +48,7 @@ interface ResultState {
   title: string;
   content: string;
   detail?: string;
+  shopListings?: ShopListing[];
 }
 
 const MATH_ACTIONS = new Set([
@@ -86,6 +92,7 @@ export default function FloatingActionMenu({
     getDefaultTargetLanguage,
   );
   const toastTimer = useRef<number | null>(null);
+  const resultPanelRef = useRef<HTMLDivElement>(null);
   const guardrailsApplied = useRef(false);
 
   const layoutKey = `${activeCategory}:${ocrLoading ? "loading" : "ready"}:${result ? "result" : "none"}`;
@@ -97,12 +104,17 @@ export default function FloatingActionMenu({
     handleDragStart,
     handleDragMove,
     handleDragEnd,
+    repositionForResultPanel,
   } = useDraggableMenu({ selection, layoutKey });
 
   const ocrPreview = session?.ocr_text?.trim() ?? "";
   const analysis = useMemo(() => analyzeOcrText(ocrPreview), [ocrPreview]);
   const imageBase64 = session?.capture.image_base64 ?? "";
   const hasCapturedImage = !!imageBase64;
+  const categoryAvailability = useMemo(
+    () => classifyCaptureCategories(ocrPreview, hasCapturedImage),
+    [ocrPreview, hasCapturedImage],
+  );
   const hasText = analysis.hasText;
 
   const showCopiedToast = useCallback((message = "¡Copiado!") => {
@@ -140,6 +152,16 @@ export default function FloatingActionMenu({
     [],
   );
 
+  useLayoutEffect(() => {
+    if (!result || !isVisible) return;
+
+    const resultPanel = resultPanelRef.current;
+    if (!resultPanel) return;
+
+    const resultHeight = resultPanel.getBoundingClientRect().height;
+    repositionForResultPanel(resultHeight);
+  }, [result, isVisible, repositionForResultPanel]);
+
   const isActionDisabled = (
     categoryId: MenuCategoryId,
     actionId: string,
@@ -148,6 +170,10 @@ export default function FloatingActionMenu({
 
     if (categoryId === "vision" || categoryId === "shop") {
       return !hasCapturedImage;
+    }
+
+    if (categoryId === "events") {
+      return !hasText && !hasCapturedImage;
     }
 
     if (categoryId === "text" && actionId === "copy") {
@@ -179,13 +205,36 @@ export default function FloatingActionMenu({
     );
   };
 
-  const isCategoryDimmed = (categoryId: MenuCategoryId) => {
-    if (captureError) return categoryId !== "text";
-    if (categoryId === "data") {
-      return !analysis.hasNumbers && !hasCapturedImage;
+  const isCategoryDimmed = useCallback(
+    (categoryId: MenuCategoryId) => {
+      if (captureError) return categoryId !== "text";
+
+      if (categoryId === "data") {
+        return !analysis.hasNumbers && !hasCapturedImage;
+      }
+
+      return !categoryAvailability[categoryId];
+    },
+    [analysis.hasNumbers, captureError, categoryAvailability, hasCapturedImage],
+  );
+
+  useEffect(() => {
+    if (ocrLoading || captureError) return;
+    if (!isCategoryDimmed(activeCategory)) return;
+
+    const fallbackCategory = MENU_CATEGORIES.find(
+      (category) => !isCategoryDimmed(category.id),
+    )?.id;
+
+    if (fallbackCategory && fallbackCategory !== activeCategory) {
+      setActiveCategory(fallbackCategory);
     }
-    return false;
-  };
+  }, [
+    activeCategory,
+    captureError,
+    isCategoryDimmed,
+    ocrLoading,
+  ]);
 
   const handleCopy = async (text: string) => {
     await copyToClipboard(text);
@@ -240,13 +289,60 @@ export default function FloatingActionMenu({
       return;
     }
 
-    if (categoryId === "events" && actionId === "google-calendar") {
-      window.open("https://calendar.google.com/calendar/u/0/r/eventedit", "_blank");
-      return;
-    }
+    if (categoryId === "events" && (actionId === "schedule" || actionId === "create-reminder")) {
+      setLoadingAction({ categoryId, actionId });
 
-    if (categoryId === "events" && actionId === "apple-calendar") {
-      window.open("calshow:", "_blank");
+      try {
+        const extracted = await geminiExtractCalendarEvent(
+          ocrPreview,
+          hasCapturedImage ? imageBase64 : undefined,
+        );
+
+        const details = {
+          title: extracted.title,
+          start: new Date(extracted.startIso),
+          end: new Date(extracted.endIso),
+          location: extracted.location,
+          description:
+            extracted.description ??
+            (ocrPreview.slice(0, 500) || undefined),
+        };
+
+        const ics =
+          actionId === "create-reminder"
+            ? buildTodoIcs(details)
+            : buildEventIcs(details);
+
+        downloadIcsFile(
+          ics,
+          details.title,
+          actionId === "create-reminder" ? "todo" : "event",
+        );
+
+        const startLabel = details.start.toLocaleString("es-MX", {
+          dateStyle: "medium",
+          timeStyle: "short",
+        });
+        const endLabel = details.end.toLocaleString("es-MX", {
+          dateStyle: "medium",
+          timeStyle: "short",
+        });
+
+        setResult({
+          title: actionId === "create-reminder" ? "Recordatorio" : "Evento",
+          content: `${details.title}\n${startLabel} → ${endLabel}`,
+          detail: details.location
+            ? `Lugar: ${details.location} · Archivo .ics descargado`
+            : "Archivo .ics descargado — ábrelo para agregar a tu calendario",
+        });
+      } catch (error) {
+        setResult({
+          title: "Error",
+          content: String(error),
+        });
+      } finally {
+        setLoadingAction(null);
+      }
       return;
     }
 
@@ -286,7 +382,32 @@ export default function FloatingActionMenu({
       } else if (categoryId === "vision" && actionId === "explain-error") {
         content = await geminiExplainError(imageBase64, ocrPreview);
       } else if (categoryId === "shop") {
-        content = await geminiShopSearch(imageBase64, ocrPreview);
+        const shopResult =
+          actionId === "compare-prices"
+            ? await geminiComparePrices(imageBase64, ocrPreview)
+            : await geminiShopSearch(imageBase64, ocrPreview);
+
+        const actionLabel =
+          MENU_CATEGORIES.find((c) => c.id === categoryId)?.actions.find(
+            (a) => a.id === actionId,
+          )?.label ?? "Resultado";
+
+        if (shopResult.noProductIdentified) {
+          setResult({
+            title: actionLabel,
+            content: shopResult.message ?? SHOP_NO_PRODUCT_MESSAGE,
+            detail: usedImageFallback ? "Procesado con OpenAI (imagen)" : undefined,
+          });
+          return;
+        }
+
+        setResult({
+          title: actionLabel,
+          content: shopResult.productName ?? "Producto identificado",
+          shopListings: shopResult.listings,
+          detail: usedImageFallback ? "Procesado con OpenAI (imagen)" : undefined,
+        });
+        return;
       }
 
       const actionLabel =
@@ -325,12 +446,23 @@ export default function FloatingActionMenu({
       >
         {result && (
           <ResultBadge
+            ref={resultPanelRef}
             title={result.title}
             content={result.content}
             detail={result.detail}
+            shopListings={result.shopListings}
             copied={resultCopied}
             onCopy={() => {
-              void handleCopy(result.content).then(() => setResultCopied(true));
+              const copyText = result.shopListings?.length
+                ? [
+                    result.content,
+                    ...result.shopListings.map(
+                      (listing) =>
+                        `${listing.storeName}: ${listing.price} · ${listing.url}`,
+                    ),
+                  ].join("\n")
+                : result.content;
+              void handleCopy(copyText).then(() => setResultCopied(true));
             }}
           />
         )}

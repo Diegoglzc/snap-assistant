@@ -48,17 +48,67 @@ export const MENU_CATEGORIES: MenuCategory[] = [
     icon: "📅",
     label: "Eventos",
     actions: [
-      { id: "apple-calendar", label: "Agendar en Apple Calendar" },
-      { id: "google-calendar", label: "Agendar en Google Calendar" },
-      { id: "create-reminder", label: "Crear Recordatorio" },
+      {
+        id: "schedule",
+        label: "Agendar",
+        description: "Genera un evento .ics para tu calendario",
+      },
+      {
+        id: "create-reminder",
+        label: "Crear Recordatorio",
+        description: "Genera un recordatorio .ics (VTODO)",
+      },
     ],
   },
 ];
 
+const SPANISH_DAY_PATTERN =
+  /\b(lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo)\b/i;
+const SPANISH_MONTH_PATTERN =
+  /\b(enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre)\b/i;
+const NUMERIC_DATE_PATTERN = /\b\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?\b/;
+const TIME_PATTERN =
+  /\b\d{1,2}:\d{2}\b|\b\d{1,2}\s*(?:AM|PM|a\.?\s*m\.?|p\.?\s*m\.?)\b/i;
+
+export interface CaptureCategoryAvailability {
+  text: boolean;
+  data: boolean;
+  events: boolean;
+  shop: boolean;
+  vision: boolean;
+}
+
+export function hasDatePattern(text: string): boolean {
+  return (
+    SPANISH_DAY_PATTERN.test(text) ||
+    SPANISH_MONTH_PATTERN.test(text) ||
+    NUMERIC_DATE_PATTERN.test(text) ||
+    TIME_PATTERN.test(text)
+  );
+}
+
+export function classifyCaptureCategories(
+  ocrText: string,
+  hasCapturedImage = false,
+): CaptureCategoryAvailability {
+  const trimmed = ocrText.trim();
+  const hasText = trimmed.length > 0;
+  const hasNumbers = extractNumbers(trimmed).length > 0;
+
+  return {
+    text: hasText,
+    data: hasNumbers,
+    events: hasDatePattern(trimmed),
+    shop: hasCapturedImage,
+    vision: true,
+  };
+}
+
 export function extractNumbers(text: string): number[] {
-  const matches = text.match(/-?\d+(?:[.,]\d+)?/g) ?? [];
+  const matches =
+    text.match(/-?\d{1,3}(?:,\d{3})+(?:\.\d+)?|-?\d+(?:\.\d+)?/g) ?? [];
   return matches
-    .map((value) => Number(value.replace(",", ".")))
+    .map((value) => Number(value.replace(/,/g, "")))
     .filter((value) => Number.isFinite(value));
 }
 

@@ -12,6 +12,7 @@ export interface Size {
 
 const VIEWPORT_PADDING = 12;
 const SELECTION_GAP = 12;
+const RESULT_PANEL_GAP = 8;
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
@@ -68,6 +69,36 @@ export function computeInitialMenuPosition(
   }
 
   return clampMenuPosition({ x, y }, menuSize, viewport);
+}
+
+export function adjustMenuPositionForResultPanel(
+  position: Point,
+  menuSize: Size,
+  resultHeight: number,
+  viewport: Size = getViewportSize(),
+): Point {
+  if (resultHeight <= 0) {
+    return clampMenuPosition(position, menuSize, viewport);
+  }
+
+  const stackHeight = resultHeight + RESULT_PANEL_GAP + menuSize.height;
+  const minStackTop = VIEWPORT_PADDING;
+  const maxStackTop = Math.max(
+    minStackTop,
+    viewport.height - VIEWPORT_PADDING - stackHeight,
+  );
+
+  let stackTop = position.y - RESULT_PANEL_GAP - resultHeight;
+
+  if (stackTop < minStackTop) {
+    stackTop = minStackTop;
+  } else if (stackTop > maxStackTop) {
+    stackTop = maxStackTop;
+  }
+
+  const adjustedY = stackTop + resultHeight + RESULT_PANEL_GAP;
+
+  return clampMenuPosition({ x: position.x, y: adjustedY }, menuSize, viewport);
 }
 
 export { VIEWPORT_PADDING };

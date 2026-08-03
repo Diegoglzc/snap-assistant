@@ -246,16 +246,183 @@ export async function geminiExplainError(
   );
 }
 
+export const SHOP_NO_PRODUCT_MESSAGE =
+  "No se identificó un producto específico en esta selección";
+
+export interface ShopListing {
+  storeName: string;
+  price: string;
+  priceValue: number | null;
+  url: string;
+}
+
+export interface ShopSearchResponse {
+  productName: string | null;
+  listings: ShopListing[];
+  noProductIdentified: boolean;
+  message?: string;
+}
+
+function buildShopPrompt(contextText: string, mode: "search" | "compare"): string {
+  const goal =
+    mode === "compare"
+      ? "Compara precios del producto identificado en distintas tiendas en línea."
+      : "Identifica el producto y sugiere opciones de compra en línea.";
+
+  return `${goal}
+
+Contexto OCR: "${contextText}"
+
+Si NO puedes identificar claramente un producto comprable específico en la imagen (artículo de tienda, objeto físico reconocible para comprar, etc.), responde ÚNICAMENTE con este texto exacto, sin comillas ni markdown:
+${SHOP_NO_PRODUCT_MESSAGE}
+
+Si sí identificas un producto, responde ÚNICAMENTE con JSON válido (sin markdown ni texto adicional) con esta forma:
+{
+  "productName": "nombre del producto",
+  "listings": [
+    {
+      "storeName": "Nombre de la tienda",
+      "price": "$1,299.00",
+      "priceValue": 1299,
+      "url": "https://url-directa-al-producto-o-busqueda-especifica"
+    }
+  ]
+}
+
+Reglas estrictas:
+- No inventes productos, tiendas, precios ni URLs si no hay un producto claramente comprable.
+- Incluye entre 3 y 6 tiendas cuando sea posible.
+- Cada listing debe tener storeName, price (legible con moneda), priceValue (número para ordenar) y url (enlace directo al producto o búsqueda muy específica del producto).
+- Ordena listings de menor a mayor priceValue.
+- Usa tiendas reconocibles cuando sea razonable.`;
+}
+
+function parsePriceValue(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string") {
+    const parsed = Number(value.replace(/[^\d.-]/g, ""));
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function parseShopSearchResponse(raw: string): ShopSearchResponse {
+  const trimmed = raw.trim();
+
+  if (
+    trimmed === SHOP_NO_PRODUCT_MESSAGE ||
+    trimmed.includes(SHOP_NO_PRODUCT_MESSAGE)
+  ) {
+    return {
+      productName: null,
+      listings: [],
+      noProductIdentified: true,
+      message: SHOP_NO_PRODUCT_MESSAGE,
+    };
+  }
+
+  const jsonMatch = trimmed.match(/\{[\s\S]*\}/);
+  if (!jsonMatch) {
+    return {
+      productName: null,
+      listings: [],
+      noProductIdentified: true,
+      message: SHOP_NO_PRODUCT_MESSAGE,
+    };
+  }
+
+  try {
+    const parsed = JSON.parse(jsonMatch[0]) as {
+      productName?: unknown;
+      listings?: Array<{
+        storeName?: unknown;
+        price?: unknown;
+        priceValue?: unknown;
+        url?: unknown;
+      }>;
+    };
+
+    const listings = (parsed.listings ?? [])
+      .map((listing) => {
+        const storeName =
+          typeof listing.storeName === "string" ? listing.storeName.trim() : "";
+        const price = typeof listing.price === "string" ? listing.price.trim() : "";
+        const url = typeof listing.url === "string" ? listing.url.trim() : "";
+        const priceValue = parsePriceValue(listing.priceValue ?? listing.price);
+
+        if (!storeName || !price || !url) return null;
+
+        return {
+          storeName,
+          price,
+          priceValue,
+          url,
+        } satisfies ShopListing;
+      })
+      .filter((listing): listing is ShopListing => listing !== null)
+      .sort((a, b) => {
+        const left = a.priceValue ?? Number.POSITIVE_INFINITY;
+        const right = b.priceValue ?? Number.POSITIVE_INFINITY;
+        return left - right;
+      });
+
+    if (listings.length === 0) {
+      return {
+        productName: null,
+        listings: [],
+        noProductIdentified: true,
+        message: SHOP_NO_PRODUCT_MESSAGE,
+      };
+    }
+
+    const productName =
+      typeof parsed.productName === "string" && parsed.productName.trim()
+        ? parsed.productName.trim()
+        : null;
+
+    return {
+      productName,
+      listings,
+      noProductIdentified: false,
+    };
+  } catch {
+    return {
+      productName: null,
+      listings: [],
+      noProductIdentified: true,
+      message: SHOP_NO_PRODUCT_MESSAGE,
+    };
+  }
+}
+
+async function geminiShopLookup(
+  imageBase64: string,
+  contextText: string,
+  mode: "search" | "compare",
+  model?: OpenAIModelId,
+): Promise<ShopSearchResponse> {
+  const raw = await generateContent(
+    buildShopPrompt(contextText, mode),
+    imageBase64,
+    model,
+  );
+  return parseShopSearchResponse(raw);
+}
+
 export async function geminiShopSearch(
   imageBase64: string,
   contextText: string,
   model?: OpenAIModelId,
-): Promise<string> {
-  return generateContent(
-    `Analiza esta imagen de producto. Contexto OCR: "${contextText}"\n\nIdentifica el producto y sugiere 3 opciones de compra con:\n- Nombre del producto\n- Precio estimado (si inferible)\n- Enlace de búsqueda sugerido (URL de Google Shopping o Amazon)\n\nFormato en español, una opción por línea.`,
-    imageBase64,
-    model,
-  );
+): Promise<ShopSearchResponse> {
+  return geminiShopLookup(imageBase64, contextText, "search", model);
+}
+
+export async function geminiComparePrices(
+  imageBase64: string,
+  contextText: string,
+  model?: OpenAIModelId,
+): Promise<ShopSearchResponse> {
+  return geminiShopLookup(imageBase64, contextText, "compare", model);
 }
 
 export async function geminiExtractTextFromImage(
@@ -267,6 +434,108 @@ export async function geminiExtractTextFromImage(
     imageBase64,
     model,
   );
+}
+
+export interface ExtractedCalendarEvent {
+  title: string;
+  startIso: string;
+  endIso: string;
+  location?: string;
+  description?: string;
+}
+
+function parseCalendarEventResponse(raw: string): ExtractedCalendarEvent {
+  const jsonMatch = raw.match(/\{[\s\S]*\}/);
+  if (!jsonMatch) {
+    throw new Error("No se pudo interpretar la fecha/hora del evento.");
+  }
+
+  const parsed = JSON.parse(jsonMatch[0]) as {
+    title?: unknown;
+    startIso?: unknown;
+    endIso?: unknown;
+    location?: unknown;
+    description?: unknown;
+  };
+
+  const title =
+    typeof parsed.title === "string" && parsed.title.trim()
+      ? parsed.title.trim()
+      : "Evento";
+
+  if (typeof parsed.startIso !== "string" || !parsed.startIso.trim()) {
+    throw new Error("No se detectó una fecha/hora válida para agendar.");
+  }
+
+  const start = new Date(parsed.startIso);
+  if (Number.isNaN(start.getTime())) {
+    throw new Error("La fecha de inicio del evento no es válida.");
+  }
+
+  let end: Date;
+  if (typeof parsed.endIso === "string" && parsed.endIso.trim()) {
+    end = new Date(parsed.endIso);
+    if (Number.isNaN(end.getTime()) || end.getTime() <= start.getTime()) {
+      end = new Date(start.getTime() + 60 * 60 * 1000);
+    }
+  } else {
+    end = new Date(start.getTime() + 60 * 60 * 1000);
+  }
+
+  return {
+    title,
+    startIso: start.toISOString(),
+    endIso: end.toISOString(),
+    location:
+      typeof parsed.location === "string" && parsed.location.trim()
+        ? parsed.location.trim()
+        : undefined,
+    description:
+      typeof parsed.description === "string" && parsed.description.trim()
+        ? parsed.description.trim()
+        : undefined,
+  };
+}
+
+function buildCalendarExtractPrompt(contextText: string, nowIso: string): string {
+  return `Extrae el evento o recordatorio principal de este contenido.
+
+Ahora es: ${nowIso}
+Contexto OCR: "${contextText}"
+
+Responde ÚNICAMENTE con JSON válido (sin markdown):
+{
+  "title": "título corto del evento",
+  "startIso": "YYYY-MM-DDTHH:mm:ss.sssZ",
+  "endIso": "YYYY-MM-DDTHH:mm:ss.sssZ",
+  "location": "lugar opcional o null",
+  "description": "notas opcionales o null"
+}
+
+Reglas:
+- startIso es obligatorio y debe ser una fecha/hora absoluta ISO-8601 en UTC.
+- Si no hay duración explícita, endIso = startIso + 1 hora.
+- Si solo hay fecha sin hora, usa 09:00 hora local convertida a UTC.
+- Si el año no aparece, asume el más cercano futuro a partir de ahora.
+- title: resume el evento en pocas palabras (no copies todo el OCR).
+- No inventes eventos si no hay fecha/hora detectables; en ese caso usa la mejor interpretación posible del texto.`;
+}
+
+export async function geminiExtractCalendarEvent(
+  contextText: string,
+  imageBase64?: string,
+  model?: OpenAIModelId,
+): Promise<ExtractedCalendarEvent> {
+  const nowIso = new Date().toISOString();
+  const prompt = buildCalendarExtractPrompt(contextText, nowIso);
+  const raw = await generateContent(
+    imageBase64
+      ? `${prompt}\n\nSi el OCR está vacío o incompleto, también usa la imagen adjunta.`
+      : prompt,
+    imageBase64,
+    model,
+  );
+  return parseCalendarEventResponse(raw);
 }
 
 function parseNumbersFromResponse(raw: string): number[] {

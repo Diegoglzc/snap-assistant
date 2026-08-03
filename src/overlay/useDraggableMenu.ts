@@ -7,6 +7,7 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import {
+  adjustMenuPositionForResultPanel,
   clampMenuPosition,
   computeInitialMenuPosition,
   getViewportSize,
@@ -116,6 +117,27 @@ export function useDraggableMenu({ selection, layoutKey }: UseDraggableMenuOptio
     }
   };
 
+  const repositionForResultPanel = useCallback(
+    (resultHeight: number) => {
+      const element = menuRef.current;
+      if (!element || resultHeight <= 0) return;
+
+      const rect = element.getBoundingClientRect();
+      if (rect.width === 0 || rect.height === 0) return;
+
+      setPosition((current) => {
+        if (current === null) return current;
+
+        return adjustMenuPositionForResultPanel(
+          current,
+          { width: rect.width, height: rect.height },
+          resultHeight,
+        );
+      });
+    },
+    [],
+  );
+
   return {
     menuRef,
     position,
@@ -124,5 +146,6 @@ export function useDraggableMenu({ selection, layoutKey }: UseDraggableMenuOptio
     handleDragStart,
     handleDragMove,
     handleDragEnd,
+    repositionForResultPanel,
   };
 }
