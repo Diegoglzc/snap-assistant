@@ -1,4 +1,5 @@
 import type { MenuCategory } from "./types";
+import { hasConvertibleUnits } from "./unitConversion";
 
 export const MENU_CATEGORIES: MenuCategory[] = [
   {
@@ -21,6 +22,11 @@ export const MENU_CATEGORIES: MenuCategory[] = [
       { id: "quick-divide", label: "División" },
       { id: "quick-sqrt", label: "Raíz cuadrada" },
       { id: "quick-average", label: "Promedio" },
+      {
+        id: "convert-units",
+        label: "Convertir unidades",
+        description: "kg↔lb, km↔mi, °C↔°F, USD/MXN/EUR",
+      },
       { id: "export-excel", label: "Exportar Excel" },
       { id: "generate-chart", label: "Generar Gráfica" },
     ],
@@ -128,10 +134,11 @@ export function classifyCaptureCategories(
   const trimmed = ocrText.trim();
   const hasText = trimmed.length > 0;
   const hasNumbers = extractNumbers(trimmed).length > 0;
+  const hasUnits = hasConvertibleUnits(trimmed);
 
   return {
     text: hasText,
-    data: hasNumbers,
+    data: hasNumbers || hasUnits,
     events: hasDatePattern(trimmed),
     shop: hasCapturedImage,
     vision: true,

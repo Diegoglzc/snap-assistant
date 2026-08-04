@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Code, Eye } from "lucide-react";
+import { Code, Eye, QrCode } from "lucide-react";
 import { classifyCaptureCategories, MENU_CATEGORIES } from "./categories";
 import { copyToClipboard } from "./clipboard";
 import {
@@ -21,8 +21,17 @@ import {
 import { buildEventIcs, buildTodoIcs, downloadIcsFile } from "./ics";
 import { computeMathOperation, type MathOperationId } from "./mathOperations";
 import { analyzeOcrText } from "./ocrAnalysis";
+import { isQrUrl } from "./qrDecode";
 import ResultBadge, { CopyToast } from "./ResultBadge";
 import TranslateLanguageSelector from "./TranslateLanguageSelector";
+import UnitConversionPanel from "./UnitConversionPanel";
+import {
+  convertMeasurement,
+  defaultTargetUnit,
+  detectMeasurement,
+  formatConvertedValue,
+  hasConvertibleUnits,
+} from "./unitConversion";
 import {
   getDefaultTargetLanguage,
   getLanguageLabel,
@@ -37,6 +46,7 @@ interface FloatingActionMenuProps {
   session: ProcessCaptureResult | null;
   ocrLoading: boolean;
   captureError: string | null;
+  qrContent: string | null;
   onClose: () => void;
 }
 
@@ -82,6 +92,7 @@ export default function FloatingActionMenu({
   session,
   ocrLoading,
   captureError,
+  qrContent,
   onClose,
 }: FloatingActionMenuProps) {
   const [activeCategory, setActiveCategory] = useState<MenuCategoryId>("text");
@@ -96,7 +107,21 @@ export default function FloatingActionMenu({
   const resultPanelRef = useRef<HTMLDivElement>(null);
   const guardrailsApplied = useRef(false);
 
-  const layoutKey = `${activeCategory}:${ocrLoading ? "loading" : "ready"}:${result ? "result" : "none"}`;
+  const ocrPreview = session?.ocr_text?.trim() ?? "";
+  const analysis = useMemo(() => analyzeOcrText(ocrPreview), [ocrPreview]);
+  const imageBase64 = session?.capture.image_base64 ?? "";
+  const hasCapturedImage = !!imageBase64;
+  const categoryAvailability = useMemo(
+    () => classifyCaptureCategories(ocrPreview, hasCapturedImage),
+    [ocrPreview, hasCapturedImage],
+  );
+  const hasText = analysis.hasText;
+  const hasConvertible = useMemo(
+    () => hasConvertibleUnits(ocrPreview),
+    [ocrPreview],
+  );
+
+  const layoutKey = `${activeCategory}:${ocrLoading ? "loading" : "ready"}:${result ? "result" : "none"}:${qrContent ? "qr" : "noqr"}:${hasConvertible ? "units" : "nounits"}`;
   const {
     menuRef,
     position,
@@ -107,16 +132,6 @@ export default function FloatingActionMenu({
     handleDragEnd,
     repositionForResultPanel,
   } = useDraggableMenu({ selection, layoutKey });
-
-  const ocrPreview = session?.ocr_text?.trim() ?? "";
-  const analysis = useMemo(() => analyzeOcrText(ocrPreview), [ocrPreview]);
-  const imageBase64 = session?.capture.image_base64 ?? "";
-  const hasCapturedImage = !!imageBase64;
-  const categoryAvailability = useMemo(
-    () => classifyCaptureCategories(ocrPreview, hasCapturedImage),
-    [ocrPreview, hasCapturedImage],
-  );
-  const hasText = analysis.hasText;
 
   const showCopiedToast = useCallback((message = "¡Copiado!") => {
     setToast(message);
@@ -185,6 +200,10 @@ export default function FloatingActionMenu({
       return !hasText && !hasCapturedImage;
     }
 
+    if (categoryId === "data" && actionId === "convert-units") {
+      return !hasConvertible;
+    }
+
     if (categoryId === "data" && DATA_NUMERIC_ACTIONS.has(actionId)) {
       if (analysis.hasNumbers) return false;
       return !hasCapturedImage;
@@ -215,6 +234,10 @@ export default function FloatingActionMenu({
       return true;
     }
 
+    if (categoryId === "data" && actionId === "convert-units" && hasConvertible) {
+      return true;
+    }
+
     return false;
   };
 
@@ -233,12 +256,18 @@ export default function FloatingActionMenu({
       if (captureError) return categoryId !== "text";
 
       if (categoryId === "data") {
-        return !analysis.hasNumbers && !hasCapturedImage;
+        return !analysis.hasNumbers && !hasCapturedImage && !hasConvertible;
       }
 
       return !categoryAvailability[categoryId];
     },
-    [analysis.hasNumbers, captureError, categoryAvailability, hasCapturedImage],
+    [
+      analysis.hasNumbers,
+      captureError,
+      categoryAvailability,
+      hasCapturedImage,
+      hasConvertible,
+    ],
   );
 
   useEffect(() => {
@@ -273,6 +302,30 @@ export default function FloatingActionMenu({
 
     if (categoryId === "text" && actionId === "copy") {
       await handleCopy(ocrPreview);
+      return;
+    }
+
+    if (categoryId === "data" && actionId === "convert-units") {
+      const measurement = detectMeasurement(ocrPreview);
+      if (!measurement) {
+        setResult({
+          title: "Sin unidades",
+          content: "No se detectó un patrón de número + unidad convertible.",
+        });
+        return;
+      }
+
+      const target = defaultTargetUnit(measurement);
+      const converted = convertMeasurement(measurement, target);
+      if (!converted) return;
+
+      setResult({
+        title: "Conversión rápida",
+        content: `${measurement.value} ${measurement.displayUnit} → ${formatConvertedValue(converted.value, measurement.family)} ${converted.label}`,
+        detail: converted.approximate
+          ? "Tipo de cambio aproximado · Usa el selector en Datos para cambiar la unidad destino"
+          : "Usa el selector en Datos para cambiar la unidad destino",
+      });
       return;
     }
 
@@ -520,6 +573,45 @@ export default function FloatingActionMenu({
             </button>
           </div>
 
+          {qrContent && (
+            <div className="border-b border-emerald-400/25 bg-emerald-500/10 px-3 py-2.5">
+              <div className="flex items-start gap-2">
+                <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-emerald-400/20 text-emerald-200">
+                  <QrCode className="h-3.5 w-3.5" aria-hidden />
+                </span>
+                <div className="min-w-0 flex-1">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-emerald-200">
+                    QR detectado
+                  </p>
+                  <p className="mt-0.5 line-clamp-2 break-all text-xs text-slate-200">
+                    {qrContent}
+                  </p>
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    {isQrUrl(qrContent) ? (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          void invoke("open_external_url", { url: qrContent.trim() })
+                        }
+                        className="rounded-lg border border-emerald-400/40 bg-emerald-500/15 px-3 py-1.5 text-xs font-medium text-emerald-50 transition hover:border-emerald-300/60 hover:bg-emerald-500/25"
+                      >
+                        Abrir enlace
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => void handleCopy(qrContent)}
+                        className="rounded-lg border border-emerald-400/40 bg-emerald-500/15 px-3 py-1.5 text-xs font-medium text-emerald-50 transition hover:border-emerald-300/60 hover:bg-emerald-500/25"
+                      >
+                        Copiar contenido
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
           <div className="flex items-center gap-1 border-b border-white/10 px-2 py-2">
             {MENU_CATEGORIES.map((category) => {
               const isActive = activeCategory === category.id;
@@ -606,6 +698,10 @@ export default function FloatingActionMenu({
                       El idioma de entrada se detecta automáticamente.
                     </p>
                   </div>
+                )}
+
+                {activeCategoryData.id === "data" && hasConvertible && (
+                  <UnitConversionPanel text={ocrPreview} />
                 )}
 
                 <div className="grid gap-1.5 sm:grid-cols-2">

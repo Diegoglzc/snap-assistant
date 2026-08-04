@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import FloatingActionMenu from "./FloatingActionMenu";
 import SelectionFrame from "./SelectionFrame";
+import { decodeQrFromBase64Png } from "./qrDecode";
 import type {
   CaptureResult,
   OverlayContext,
@@ -61,6 +62,7 @@ export default function CaptureOverlay() {
   const [session, setSession] = useState<ProcessCaptureResult | null>(null);
   const [ocrLoading, setOcrLoading] = useState(false);
   const [captureError, setCaptureError] = useState<string | null>(null);
+  const [qrContent, setQrContent] = useState<string | null>(null);
   const startPoint = useRef<{ x: number; y: number } | null>(null);
   const ocrRunId = useRef(0);
 
@@ -71,6 +73,7 @@ export default function CaptureOverlay() {
     setSession(null);
     setOcrLoading(false);
     setCaptureError(null);
+    setQrContent(null);
     startPoint.current = null;
     ocrRunId.current += 1;
   }, []);
@@ -104,6 +107,7 @@ export default function CaptureOverlay() {
 
         setCaptureError(null);
         setPhase("menu");
+        setQrContent(null);
 
         setSession({
           capture,
@@ -112,18 +116,20 @@ export default function CaptureOverlay() {
           ocr_confidence: 0,
         });
 
-        let ocr = { text: "", lines: [] as string[], confidence: 0 };
-        try {
-          ocr = await invoke<{
-            text: string;
-            lines: string[];
-            confidence: number;
-          }>("run_ocr_on_image", {
-            imageBase64: capture.image_base64,
-          });
-        } catch (ocrError) {
+        const ocrPromise = invoke<{
+          text: string;
+          lines: string[];
+          confidence: number;
+        }>("run_ocr_on_image", {
+          imageBase64: capture.image_base64,
+        }).catch((ocrError) => {
           console.warn("Local OCR failed; Gemini can still process the image:", ocrError);
-        }
+          return { text: "", lines: [] as string[], confidence: 0 };
+        });
+
+        const qrPromise = decodeQrFromBase64Png(capture.image_base64);
+
+        const [ocr, qrPayload] = await Promise.all([ocrPromise, qrPromise]);
 
         if (runId !== ocrRunId.current) return;
 
@@ -135,6 +141,7 @@ export default function CaptureOverlay() {
         };
 
         setSession(result);
+        setQrContent(qrPayload);
         setOcrLoading(false);
         await emit("capture-complete", result);
       } catch (error) {
@@ -217,6 +224,7 @@ export default function CaptureOverlay() {
     setPhase("capturing");
     setOcrLoading(true);
     setSession(null);
+    setQrContent(null);
     setCaptureError(null);
 
     void runBackgroundCrop(rect, context);
@@ -265,6 +273,7 @@ export default function CaptureOverlay() {
             session={session}
             ocrLoading={ocrLoading}
             captureError={captureError}
+            qrContent={qrContent}
             onClose={() => void cancelCapture()}
           />
         )}
