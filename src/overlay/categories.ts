@@ -8,9 +8,19 @@ export const MENU_CATEGORIES: MenuCategory[] = [
     label: "Texto",
     actions: [
       { id: "copy", label: "Copiar", description: "Copia el texto OCR al portapapeles" },
+      {
+        id: "read-aloud",
+        label: "Leer en voz alta",
+        description: "Lee el texto OCR con la voz del sistema · idioma detectado automáticamente",
+      },
       { id: "translate", label: "Traducir", description: "Detecta idioma origen · traduce al seleccionado" },
       { id: "summarize", label: "Resumir" },
       { id: "extract-list", label: "Extraer Lista" },
+      {
+        id: "save-contact",
+        label: "Guardar contacto",
+        description: "Genera un archivo .vcf con nombre, teléfono, correo y empresa",
+      },
     ],
   },
   {

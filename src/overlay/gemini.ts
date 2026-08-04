@@ -603,6 +603,96 @@ export async function geminiExtractCalendarEvent(
   return parseCalendarEventResponse(raw);
 }
 
+export interface ExtractedContact {
+  fullName: string;
+  phone?: string;
+  email?: string;
+  organization?: string;
+  title?: string;
+}
+
+function parseContactResponse(raw: string): ExtractedContact {
+  const jsonMatch = raw.match(/\{[\s\S]*\}/);
+  if (!jsonMatch) {
+    throw new Error("No se pudo interpretar los datos del contacto.");
+  }
+
+  const parsed = JSON.parse(jsonMatch[0]) as {
+    fullName?: unknown;
+    phone?: unknown;
+    email?: unknown;
+    organization?: unknown;
+    title?: unknown;
+  };
+
+  const fullName =
+    typeof parsed.fullName === "string" && parsed.fullName.trim()
+      ? parsed.fullName.trim()
+      : "";
+  const phone =
+    typeof parsed.phone === "string" && parsed.phone.trim()
+      ? parsed.phone.trim()
+      : undefined;
+  const email =
+    typeof parsed.email === "string" && parsed.email.trim()
+      ? parsed.email.trim()
+      : undefined;
+  const organization =
+    typeof parsed.organization === "string" && parsed.organization.trim()
+      ? parsed.organization.trim()
+      : undefined;
+  const title =
+    typeof parsed.title === "string" && parsed.title.trim()
+      ? parsed.title.trim()
+      : undefined;
+
+  if (!fullName && !phone && !email && !organization) {
+    throw new Error("No se detectaron datos de contacto en la captura.");
+  }
+
+  return {
+    fullName: fullName || "Contacto",
+    phone,
+    email,
+    organization,
+    title,
+  };
+}
+
+export async function geminiExtractContact(
+  contextText: string,
+  imageBase64?: string,
+  model?: OpenAIModelId,
+): Promise<ExtractedContact> {
+  const prompt = `Extrae los datos de contacto de una tarjeta, firma o texto.
+
+Contexto OCR: "${contextText}"
+
+Responde ÚNICAMENTE con JSON válido (sin markdown):
+{
+  "fullName": "nombre completo de la persona",
+  "phone": "teléfono o null",
+  "email": "correo o null",
+  "organization": "empresa u organización o null",
+  "title": "cargo o null"
+}
+
+Reglas:
+- No inventes datos que no aparezcan en el texto o la imagen.
+- Si solo hay empresa/teléfono/correo sin nombre claro, usa fullName "Contacto" o el nombre más cercano.
+- Normaliza el teléfono quitando ruido obvio pero conserva el formato legible.
+- email debe ser una dirección válida si está presente.`;
+
+  const raw = await generateContent(
+    imageBase64
+      ? `${prompt}\n\nSi el OCR está vacío o incompleto, también usa la imagen adjunta.`
+      : prompt,
+    imageBase64,
+    model,
+  );
+  return parseContactResponse(raw);
+}
+
 function parseNumbersFromResponse(raw: string): number[] {
   const jsonMatch = raw.match(/\[[\d\s.,\-eE]+\]/);
   if (!jsonMatch) return [];

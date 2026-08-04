@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Code, Eye, QrCode } from "lucide-react";
+import { Code, Contact, Eye, QrCode, Volume2 } from "lucide-react";
 import { classifyCaptureCategories, MENU_CATEGORIES } from "./categories";
 import { copyToClipboard } from "./clipboard";
 import {
   geminiExplainError,
   geminiExtractCalendarEvent,
+  geminiExtractContact,
   geminiExtractList,
   geminiExtractListFromImage,
   geminiExtractNumbersFromImage,
@@ -32,6 +33,13 @@ import {
   formatConvertedValue,
   hasConvertibleUnits,
 } from "./unitConversion";
+import {
+  buildVCard,
+  downloadVcfFile,
+  extractContactHeuristics,
+  hasContactPattern,
+} from "./vcard";
+import { isSpeaking, speakText, stopSpeaking } from "./speech";
 import {
   getDefaultTargetLanguage,
   getLanguageLabel,
@@ -100,6 +108,7 @@ export default function FloatingActionMenu({
   const [result, setResult] = useState<ResultState | null>(null);
   const [toast, setToast] = useState("");
   const [resultCopied, setResultCopied] = useState(false);
+  const [speaking, setSpeaking] = useState(false);
   const [targetLanguage, setTargetLanguage] = useState<TargetLanguageCode>(
     getDefaultTargetLanguage,
   );
@@ -120,6 +129,7 @@ export default function FloatingActionMenu({
     () => hasConvertibleUnits(ocrPreview),
     [ocrPreview],
   );
+  const hasContact = useMemo(() => hasContactPattern(ocrPreview), [ocrPreview]);
 
   const layoutKey = `${activeCategory}:${ocrLoading ? "loading" : "ready"}:${result ? "result" : "none"}:${qrContent ? "qr" : "noqr"}:${hasConvertible ? "units" : "nounits"}`;
   const {
@@ -144,8 +154,16 @@ export default function FloatingActionMenu({
     setActiveCategory("text");
     setResult(null);
     setLoadingAction(null);
+    setSpeaking(false);
+    stopSpeaking();
     setTargetLanguage(getDefaultTargetLanguage());
   }, [selection]);
+
+  useEffect(() => {
+    return () => {
+      stopSpeaking();
+    };
+  }, []);
 
   const handleTargetLanguageChange = (code: TargetLanguageCode) => {
     setTargetLanguage(code);
@@ -196,7 +214,15 @@ export default function FloatingActionMenu({
       return ocrLoading || !hasText;
     }
 
+    if (categoryId === "text" && actionId === "read-aloud") {
+      return ocrLoading || !hasText;
+    }
+
     if (categoryId === "text" && TEXT_GEMINI_ACTIONS.has(actionId)) {
+      return !hasText && !hasCapturedImage;
+    }
+
+    if (categoryId === "text" && actionId === "save-contact") {
       return !hasText && !hasCapturedImage;
     }
 
@@ -238,6 +264,10 @@ export default function FloatingActionMenu({
       return true;
     }
 
+    if (categoryId === "text" && actionId === "save-contact" && hasContact) {
+      return true;
+    }
+
     return false;
   };
 
@@ -247,6 +277,12 @@ export default function FloatingActionMenu({
     }
     if (actionId === "identify-object") {
       return <Eye className="h-3.5 w-3.5 shrink-0 opacity-90" aria-hidden />;
+    }
+    if (actionId === "save-contact") {
+      return <Contact className="h-3.5 w-3.5 shrink-0 opacity-90" aria-hidden />;
+    }
+    if (actionId === "read-aloud") {
+      return <Volume2 className="h-3.5 w-3.5 shrink-0 opacity-90" aria-hidden />;
     }
     return null;
   }
@@ -297,11 +333,57 @@ export default function FloatingActionMenu({
     if (isActionDisabled(categoryId, actionId)) return;
     if (loadingAction) return;
 
+    if (actionId !== "read-aloud" && (speaking || isSpeaking())) {
+      stopSpeaking();
+      setSpeaking(false);
+    }
+
     setResult(null);
     setResultCopied(false);
 
     if (categoryId === "text" && actionId === "copy") {
       await handleCopy(ocrPreview);
+      return;
+    }
+
+    if (categoryId === "text" && actionId === "read-aloud") {
+      if (speaking || isSpeaking()) {
+        stopSpeaking();
+        setSpeaking(false);
+        setResult({
+          title: "Lectura",
+          content: "Lectura detenida.",
+        });
+        return;
+      }
+
+      try {
+        const detected = speakText(ocrPreview, {
+          onEnd: () => setSpeaking(false),
+          onError: (error) => {
+            setSpeaking(false);
+            setResult({
+              title: "Error",
+              content: error,
+            });
+          },
+        });
+        setSpeaking(true);
+        setResult({
+          title: "Leyendo en voz alta",
+          content:
+            ocrPreview.length > 220
+              ? `${ocrPreview.slice(0, 220)}…`
+              : ocrPreview,
+          detail: `Idioma detectado: ${detected.label} · Pulsa de nuevo para detener`,
+        });
+      } catch (error) {
+        setSpeaking(false);
+        setResult({
+          title: "Error",
+          content: String(error),
+        });
+      }
       return;
     }
 
@@ -410,6 +492,73 @@ export default function FloatingActionMenu({
           detail: details.location
             ? `Lugar: ${details.location} · Archivo .ics descargado`
             : "Archivo .ics descargado — ábrelo para agregar a tu calendario",
+        });
+      } catch (error) {
+        setResult({
+          title: "Error",
+          content: String(error),
+        });
+      } finally {
+        setLoadingAction(null);
+      }
+      return;
+    }
+
+    if (categoryId === "text" && actionId === "save-contact") {
+      setLoadingAction({ categoryId, actionId });
+
+      try {
+        const heuristics = extractContactHeuristics(ocrPreview);
+        let extracted;
+        try {
+          extracted = await geminiExtractContact(
+            ocrPreview,
+            hasCapturedImage ? imageBase64 : undefined,
+          );
+        } catch (aiError) {
+          if (!heuristics.phone && !heuristics.email && !heuristics.fullName) {
+            throw aiError;
+          }
+          extracted = {
+            fullName: heuristics.fullName ?? "Contacto",
+            phone: heuristics.phone,
+            email: heuristics.email,
+            organization: heuristics.organization,
+          };
+        }
+
+        const details = {
+          fullName: extracted.fullName || heuristics.fullName || "Contacto",
+          phone: extracted.phone || heuristics.phone,
+          email: extracted.email || heuristics.email,
+          organization: extracted.organization || heuristics.organization,
+          title: extracted.title,
+          note: ocrPreview.slice(0, 500) || undefined,
+        };
+
+        if (!details.phone && !details.email && !details.organization) {
+          setResult({
+            title: "Sin contacto",
+            content: "No se detectaron teléfono, correo ni empresa en la captura.",
+          });
+          return;
+        }
+
+        const vcf = buildVCard(details);
+        downloadVcfFile(vcf, details.fullName);
+
+        const lines = [
+          details.fullName,
+          details.title,
+          details.organization,
+          details.phone,
+          details.email,
+        ].filter(Boolean);
+
+        setResult({
+          title: "Contacto",
+          content: lines.join("\n"),
+          detail: "Archivo .vcf descargado — ábrelo para guardar en Contactos",
         });
       } catch (error) {
         setResult({
@@ -707,10 +856,16 @@ export default function FloatingActionMenu({
                 <div className="grid gap-1.5 sm:grid-cols-2">
                   {activeCategoryData.actions.map((action) => {
                     const disabled = isActionDisabled(activeCategoryData.id, action.id);
-                    const highlighted = isActionHighlighted(activeCategoryData.id, action.id);
+                    const highlighted =
+                      isActionHighlighted(activeCategoryData.id, action.id) ||
+                      (action.id === "read-aloud" && speaking);
                     const isLoading =
                       loadingAction?.categoryId === activeCategoryData.id &&
                       loadingAction.actionId === action.id;
+                    const label =
+                      action.id === "read-aloud" && speaking
+                        ? "Detener lectura"
+                        : action.label;
 
                     return (
                       <button
@@ -731,7 +886,7 @@ export default function FloatingActionMenu({
                             <span className="inline-block h-3 w-3 shrink-0 animate-spin rounded-full border-2 border-violet-300/30 border-t-violet-300" />
                           )}
                           {renderActionIcon(action.id)}
-                          {action.label}
+                          {label}
                         </span>
                         {action.description && (
                           <span className="mt-0.5 block text-xs text-slate-400">

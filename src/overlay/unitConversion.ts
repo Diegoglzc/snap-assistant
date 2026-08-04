@@ -55,7 +55,9 @@ function normalizeUnitToken(token: string): UnitId | null {
     .trim()
     .replace(/°/g, "")
     .replace(/\s+/g, "")
-    .toLowerCase();
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/\p{M}/gu, "");
 
   switch (cleaned) {
     case "kg":
@@ -72,8 +74,6 @@ function normalizeUnitToken(token: string): UnitId | null {
     case "kms":
     case "kilometro":
     case "kilometros":
-    case "kilómetro":
-    case "kilómetros":
       return "km";
     case "mi":
     case "mile":
@@ -83,6 +83,8 @@ function normalizeUnitToken(token: string): UnitId | null {
       return "mi";
     case "c":
     case "celsius":
+    case "centigrado":
+    case "centigrados":
       return "c";
     case "f":
     case "fahrenheit":
@@ -90,12 +92,18 @@ function normalizeUnitToken(token: string): UnitId | null {
     case "usd":
     case "us$":
     case "$":
+    case "dolar":
+    case "dolares":
       return "usd";
     case "mxn":
     case "mx$":
+    case "peso":
+    case "pesos":
       return "mxn";
     case "eur":
     case "€":
+    case "euro":
+    case "euros":
       return "eur";
     default:
       return null;
@@ -124,8 +132,8 @@ export function detectMeasurement(text: string): DetectedMeasurement | null {
   if (!trimmed) return null;
 
   const patterns: RegExp[] = [
-    /(-?\d{1,3}(?:,\d{3})+(?:\.\d+)?|-?\d+(?:\.\d+)?)\s*(°\s*[CcFf]|kg|kgs|lb|lbs|km|kms|mi|miles?|millas?|USD|MXN|EUR|€|\$)/i,
-    /(USD|MXN|EUR|US\$|MX\$|€|\$)\s*(-?\d{1,3}(?:,\d{3})+(?:\.\d+)?|-?\d+(?:\.\d+)?)/i,
+    /(-?\d{1,3}(?:,\d{3})+(?:\.\d+)?|-?\d+(?:\.\d+)?)\s*(?:grados?\s+)?(°\s*[CcFf]|kilogramos?|kgs?|libras?|lbs?|kilómetros?|kilometros?|kms?|miles?|millas?|mi|celsius|centígrados?|centigrados?|fahrenheit|dólares?|dolares?|pesos?|euros?|USD|MXN|EUR|€|\$)/i,
+    /(dólares?|dolares?|pesos?|euros?|USD|MXN|EUR|US\$|MX\$|€|\$)\s*(-?\d{1,3}(?:,\d{3})+(?:\.\d+)?|-?\d+(?:\.\d+)?)/i,
   ];
 
   for (const pattern of patterns) {
