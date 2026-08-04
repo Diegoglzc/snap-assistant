@@ -146,6 +146,16 @@ async fn show_capture_overlay_for_monitor(
 }
 
 async fn begin_capture_flow(app: AppHandle) -> Result<(), String> {
+    // Hide the main window first so it never appears in the screen capture,
+    // whether capture was triggered from the shortcut or the in-app button.
+    if let Some(main) = app.get_webview_window("main") {
+        let is_visible = main.is_visible().unwrap_or(false);
+        if is_visible {
+            main.hide().map_err(|error| error.to_string())?;
+        }
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
     let _ = close_monitor_picker_windows(&app);
     let _ = close_capture_overlay(&app);
     let _ = clear_capture_buffer(&app);

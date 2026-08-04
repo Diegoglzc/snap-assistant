@@ -157,9 +157,20 @@ export default function CaptureOverlay() {
   );
 
   useEffect(() => {
+    if (phase === "menu") {
+      // Allow other apps to come to the foreground once the tools menu is visible.
+      void invoke("set_overlay_always_on_top", { enabled: false });
+    } else if (phase === "selecting") {
+      void invoke("set_overlay_always_on_top", { enabled: true });
+    }
+  }, [phase]);
+
+  useEffect(() => {
     const unlistenShow = listen<OverlayContext>("overlay-show", (event) => {
       setContext(event.payload);
       resetState();
+      // Selection chrome needs to stay above other windows until the menu appears.
+      void invoke("set_overlay_always_on_top", { enabled: true });
     });
 
     const onKeyDown = (event: KeyboardEvent) => {

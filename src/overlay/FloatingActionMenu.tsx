@@ -666,7 +666,6 @@ export default function FloatingActionMenu({
         }}
         onMouseDown={(event) => {
           event.stopPropagation();
-          void invoke("set_overlay_always_on_top", { enabled: true });
         }}
       >
         {result && (
