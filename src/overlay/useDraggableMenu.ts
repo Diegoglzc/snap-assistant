@@ -18,9 +18,15 @@ import type { SelectionRect } from "./types";
 interface UseDraggableMenuOptions {
   selection: SelectionRect;
   layoutKey: string;
+  /** When false, skip placement/clamp (native window owns geometry). */
+  enabled?: boolean;
 }
 
-export function useDraggableMenu({ selection, layoutKey }: UseDraggableMenuOptions) {
+export function useDraggableMenu({
+  selection,
+  layoutKey,
+  enabled = true,
+}: UseDraggableMenuOptions) {
   const menuRef = useRef<HTMLDivElement>(null);
   const [position, setPosition] = useState<Point | null>(null);
   const [isDragging, setIsDragging] = useState(false);
@@ -29,6 +35,8 @@ export function useDraggableMenu({ selection, layoutKey }: UseDraggableMenuOptio
   const dragState = useRef<{ startX: number; startY: number; origin: Point } | null>(null);
 
   const measureAndPlace = useCallback((mode: "initial" | "clamp") => {
+    if (!enabled) return;
+
     const element = menuRef.current;
     if (!element) return;
 
@@ -44,7 +52,7 @@ export function useDraggableMenu({ selection, layoutKey }: UseDraggableMenuOptio
       }
       return clampMenuPosition(current, menuSize, viewport);
     });
-  }, [selection]);
+  }, [enabled, selection]);
 
   useEffect(() => {
     userDragged.current = false;
@@ -55,18 +63,20 @@ export function useDraggableMenu({ selection, layoutKey }: UseDraggableMenuOptio
   }, [selection]);
 
   useLayoutEffect(() => {
+    if (!enabled) return;
     measureAndPlace(needsInitialPlacement.current ? "initial" : "clamp");
     needsInitialPlacement.current = false;
-  }, [selection, layoutKey, measureAndPlace]);
+  }, [enabled, selection, layoutKey, measureAndPlace]);
 
   useEffect(() => {
+    if (!enabled) return;
     const handleResize = () => measureAndPlace("clamp");
     window.addEventListener("resize", handleResize);
     return () => window.removeEventListener("resize", handleResize);
-  }, [measureAndPlace]);
+  }, [enabled, measureAndPlace]);
 
   const handleDragStart = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (position === null) return;
+    if (!enabled || position === null) return;
 
     event.preventDefault();
     event.stopPropagation();
@@ -83,7 +93,7 @@ export function useDraggableMenu({ selection, layoutKey }: UseDraggableMenuOptio
   };
 
   const handleDragMove = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (!dragState.current || !menuRef.current) return;
+    if (!enabled || !dragState.current || !menuRef.current) return;
 
     event.preventDefault();
     event.stopPropagation();
@@ -104,7 +114,7 @@ export function useDraggableMenu({ selection, layoutKey }: UseDraggableMenuOptio
   };
 
   const handleDragEnd = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (!dragState.current) return;
+    if (!enabled || !dragState.current) return;
 
     event.preventDefault();
     event.stopPropagation();
@@ -119,6 +129,8 @@ export function useDraggableMenu({ selection, layoutKey }: UseDraggableMenuOptio
 
   const repositionForResultPanel = useCallback(
     (resultHeight: number) => {
+      if (!enabled) return;
+
       const element = menuRef.current;
       if (!element || resultHeight <= 0) return;
 
@@ -135,7 +147,7 @@ export function useDraggableMenu({ selection, layoutKey }: UseDraggableMenuOptio
         );
       });
     },
-    [],
+    [enabled],
   );
 
   return {

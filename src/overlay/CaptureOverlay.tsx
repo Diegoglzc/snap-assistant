@@ -63,6 +63,7 @@ export default function CaptureOverlay() {
   const [ocrLoading, setOcrLoading] = useState(false);
   const [captureError, setCaptureError] = useState<string | null>(null);
   const [qrContent, setQrContent] = useState<string | null>(null);
+  const [windowFitted, setWindowFitted] = useState(false);
   const startPoint = useRef<{ x: number; y: number } | null>(null);
   const ocrRunId = useRef(0);
 
@@ -74,6 +75,7 @@ export default function CaptureOverlay() {
     setOcrLoading(false);
     setCaptureError(null);
     setQrContent(null);
+    setWindowFitted(false);
     startPoint.current = null;
     ocrRunId.current += 1;
   }, []);
@@ -166,6 +168,22 @@ export default function CaptureOverlay() {
   }, [phase]);
 
   useEffect(() => {
+    const root = document.documentElement;
+    if (windowFitted) {
+      root.classList.add("overlay-compact");
+      document.body.classList.add("overlay-compact");
+    } else {
+      root.classList.remove("overlay-compact");
+      document.body.classList.remove("overlay-compact");
+    }
+
+    return () => {
+      root.classList.remove("overlay-compact");
+      document.body.classList.remove("overlay-compact");
+    };
+  }, [windowFitted]);
+
+  useEffect(() => {
     const unlistenShow = listen<OverlayContext>("overlay-show", (event) => {
       setContext(event.payload);
       resetState();
@@ -243,13 +261,14 @@ export default function CaptureOverlay() {
 
   const activeSelection = phase === "selecting" ? selection : lockedSelection;
   const isInteractive = phase === "idle" || phase === "selecting";
-  const showSelectionChrome = phase === "selecting" || phase === "menu";
-  const snapshotSrc = context?.snapshot_base64
-    ? `data:image/png;base64,${context.snapshot_base64}`
-    : null;
+  const showSelectionChrome = phase === "selecting";
+  const snapshotSrc =
+    context?.snapshot_base64 && phase !== "menu"
+      ? `data:image/png;base64,${context.snapshot_base64}`
+      : null;
 
   return (
-    <div className="fixed inset-0">
+    <div className={windowFitted ? "relative w-full overflow-visible" : "fixed inset-0"}>
       {snapshotSrc && (
         <img
           src={snapshotSrc}
@@ -260,10 +279,14 @@ export default function CaptureOverlay() {
       )}
 
       <div
-        className={`fixed inset-0 ${isInteractive ? "pointer-events-auto cursor-crosshair" : "pointer-events-none"}`}
-        onMouseDown={handleMouseDown}
-        onMouseMove={handleMouseMove}
-        onMouseUp={handleMouseUp}
+        className={
+          windowFitted
+            ? "relative w-full"
+            : `fixed inset-0 ${isInteractive ? "pointer-events-auto cursor-crosshair" : "pointer-events-none"}`
+        }
+        onMouseDown={windowFitted ? undefined : handleMouseDown}
+        onMouseMove={windowFitted ? undefined : handleMouseMove}
+        onMouseUp={windowFitted ? undefined : handleMouseUp}
       >
         {phase === "idle" && (
           <div className="pointer-events-none fixed left-1/2 top-4 -translate-x-1/2 rounded-full border border-violet-300/25 bg-slate-900/90 px-4 py-2 text-sm text-slate-100 shadow-md">
@@ -286,6 +309,7 @@ export default function CaptureOverlay() {
             captureError={captureError}
             qrContent={qrContent}
             onClose={() => void cancelCapture()}
+            onWindowFitted={() => setWindowFitted(true)}
           />
         )}
       </div>

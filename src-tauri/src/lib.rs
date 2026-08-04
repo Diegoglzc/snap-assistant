@@ -10,7 +10,10 @@ use monitor_picker::{
 };
 use ocr::OcrResult;
 use std::sync::Mutex;
-use tauri::{AppHandle, Emitter, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder, WindowEvent};
+use tauri::{
+    AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, RunEvent, WebviewUrl,
+    WebviewWindowBuilder, WindowEvent,
+};
 use tauri_plugin_opener::OpenerExt;
 use std::str::FromStr;
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
@@ -404,6 +407,58 @@ fn set_overlay_always_on_top(app: AppHandle, enabled: bool) -> Result<(), String
     Ok(())
 }
 
+#[derive(serde::Deserialize)]
+struct OverlayPanelRect {
+    /// CSS pixel offset from the overlay webview's top-left corner.
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+}
+
+/// Shrinks the fullscreen overlay to the floating tools panel bounds.
+/// `rect` is in CSS/logical pixels relative to the current webview viewport.
+#[tauri::command]
+fn fit_overlay_to_panel(app: AppHandle, rect: OverlayPanelRect) -> Result<(), String> {
+    let overlay = app
+        .get_webview_window(OVERLAY_WINDOW_LABEL)
+        .ok_or_else(|| "Overlay window not found".to_string())?;
+
+    let width = rect.width.max(1.0);
+    let height = rect.height.max(1.0);
+
+    let scale = overlay.scale_factor().map_err(|error| error.to_string())?;
+    let outer = overlay
+        .outer_position()
+        .map_err(|error| error.to_string())?;
+
+    let screen_x = (outer.x as f64 / scale) + rect.x;
+    let screen_y = (outer.y as f64 / scale) + rect.y;
+
+    overlay
+        .set_always_on_top(false)
+        .map_err(|error| error.to_string())?;
+    overlay
+        .set_size(LogicalSize::new(width, height))
+        .map_err(|error| error.to_string())?;
+    overlay
+        .set_position(LogicalPosition::new(screen_x, screen_y))
+        .map_err(|error| error.to_string())?;
+
+    Ok(())
+}
+
+#[tauri::command]
+fn start_overlay_dragging(app: AppHandle) -> Result<(), String> {
+    let overlay = app
+        .get_webview_window(OVERLAY_WINDOW_LABEL)
+        .ok_or_else(|| "Overlay window not found".to_string())?;
+
+    overlay
+        .start_dragging()
+        .map_err(|error| error.to_string())
+}
+
 fn load_env() {
     let _ = dotenvy::dotenv();
 }
@@ -470,7 +525,9 @@ pub fn run() {
             cancel_monitor_picker,
             update_global_shortcut,
             open_external_url,
-            set_overlay_always_on_top
+            set_overlay_always_on_top,
+            fit_overlay_to_panel,
+            start_overlay_dragging
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application")

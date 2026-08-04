@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Code, Contact, Eye, QrCode, Volume2 } from "lucide-react";
+import { Camera, Code, Contact, Eye, QrCode, Volume2 } from "lucide-react";
 import { classifyCaptureCategories, MENU_CATEGORIES } from "./categories";
 import { copyToClipboard } from "./clipboard";
 import {
@@ -41,6 +41,11 @@ import {
 } from "./vcard";
 import { isSpeaking, speakText, stopSpeaking } from "./speech";
 import {
+  fitOverlayToPanelRect,
+  nextPaint,
+  startOverlayDragging,
+} from "./fitOverlayWindow";
+import {
   getDefaultTargetLanguage,
   getLanguageLabel,
   setDefaultTargetLanguage,
@@ -56,6 +61,8 @@ interface FloatingActionMenuProps {
   captureError: string | null;
   qrContent: string | null;
   onClose: () => void;
+  /** Fired once the native overlay window has been shrunk to the panel. */
+  onWindowFitted?: () => void;
 }
 
 interface ActionLoading {
@@ -102,6 +109,7 @@ export default function FloatingActionMenu({
   captureError,
   qrContent,
   onClose,
+  onWindowFitted,
 }: FloatingActionMenuProps) {
   const [activeCategory, setActiveCategory] = useState<MenuCategoryId>("text");
   const [loadingAction, setLoadingAction] = useState<ActionLoading | null>(null);
@@ -109,12 +117,17 @@ export default function FloatingActionMenu({
   const [toast, setToast] = useState("");
   const [resultCopied, setResultCopied] = useState(false);
   const [speaking, setSpeaking] = useState(false);
+  const [windowFitted, setWindowFitted] = useState(false);
   const [targetLanguage, setTargetLanguage] = useState<TargetLanguageCode>(
     getDefaultTargetLanguage,
   );
   const toastTimer = useRef<number | null>(null);
   const resultPanelRef = useRef<HTMLDivElement>(null);
   const guardrailsApplied = useRef(false);
+  const fittingRef = useRef(false);
+  const lastFitSize = useRef({ width: 0, height: 0 });
+  const onWindowFittedRef = useRef(onWindowFitted);
+  onWindowFittedRef.current = onWindowFitted;
 
   const ocrPreview = session?.ocr_text?.trim() ?? "";
   const analysis = useMemo(() => analyzeOcrText(ocrPreview), [ocrPreview]);
@@ -140,8 +153,46 @@ export default function FloatingActionMenu({
     handleDragStart,
     handleDragMove,
     handleDragEnd,
-    repositionForResultPanel,
-  } = useDraggableMenu({ selection, layoutKey });
+  } = useDraggableMenu({ selection, layoutKey, enabled: !windowFitted });
+
+  const syncOverlayWindow = useCallback(async (mode: "place" | "resize") => {
+    const shell = menuRef.current;
+    if (!shell || fittingRef.current) return;
+
+    const rect = shell.getBoundingClientRect();
+    const width = Math.max(rect.width, shell.scrollWidth);
+    const height = Math.max(rect.height, shell.scrollHeight);
+    if (width < 2 || height < 2) return;
+
+    if (
+      mode === "resize" &&
+      Math.abs(width - lastFitSize.current.width) < 1 &&
+      Math.abs(height - lastFitSize.current.height) < 1
+    ) {
+      return;
+    }
+
+    fittingRef.current = true;
+    try {
+      // For resize after fit, content is at (0,0) of the compact window.
+      const fitRect =
+        mode === "resize"
+          ? { x: 0, y: 0, width, height }
+          : { x: rect.left, y: rect.top, width, height };
+
+      await fitOverlayToPanelRect(fitRect);
+      lastFitSize.current = { width, height };
+
+      if (mode === "place") {
+        setWindowFitted(true);
+        onWindowFittedRef.current?.();
+      }
+    } catch (error) {
+      console.error("Failed to fit overlay window to panel:", error);
+    } finally {
+      fittingRef.current = false;
+    }
+  }, [menuRef]);
 
   const showCopiedToast = useCallback((message = "¡Copiado!") => {
     setToast(message);
@@ -155,6 +206,8 @@ export default function FloatingActionMenu({
     setResult(null);
     setLoadingAction(null);
     setSpeaking(false);
+    setWindowFitted(false);
+    lastFitSize.current = { width: 0, height: 0 };
     stopSpeaking();
     setTargetLanguage(getDefaultTargetLanguage());
   }, [selection]);
@@ -186,15 +239,54 @@ export default function FloatingActionMenu({
     [],
   );
 
+  // Initial shrink: once the menu has a canvas position, match the native window to it.
   useLayoutEffect(() => {
-    if (!result || !isVisible) return;
+    if (!isVisible || windowFitted) return;
 
-    const resultPanel = resultPanelRef.current;
-    if (!resultPanel) return;
+    let cancelled = false;
+    void (async () => {
+      await nextPaint();
+      if (cancelled) return;
+      await syncOverlayWindow("place");
+    })();
 
-    const resultHeight = resultPanel.getBoundingClientRect().height;
-    repositionForResultPanel(resultHeight);
-  }, [result, isVisible, repositionForResultPanel]);
+    return () => {
+      cancelled = true;
+    };
+  }, [isVisible, windowFitted, layoutKey, syncOverlayWindow]);
+
+  // Keep the compact window sized to content as OCR/results/categories change.
+  useLayoutEffect(() => {
+    if (!windowFitted) return;
+
+    let cancelled = false;
+    void (async () => {
+      await nextPaint();
+      if (cancelled) return;
+      await syncOverlayWindow("resize");
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [windowFitted, layoutKey, result, syncOverlayWindow]);
+
+  const handlePanelDragStart = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (windowFitted) {
+      event.preventDefault();
+      event.stopPropagation();
+      void startOverlayDragging();
+      return;
+    }
+    handleDragStart(event);
+  };
+
+  const handleNewCapture = () => {
+    stopSpeaking();
+    setSpeaking(false);
+    // start_capture_overlay closes the current overlay and runs begin_capture_flow.
+    void invoke("start_capture_overlay");
+  };
 
   const isActionDisabled = (
     categoryId: MenuCategoryId,
@@ -659,11 +751,19 @@ export default function FloatingActionMenu({
     <>
       <div
         ref={menuRef}
-        className={`pointer-events-auto fixed z-50 w-[min(calc(100vw-24px),560px)] ${isVisible ? "animate-menu-reveal" : "invisible"}`}
-        style={{
-          top: position?.y ?? 0,
-          left: position?.x ?? 0,
-        }}
+        className={
+          windowFitted
+            ? "pointer-events-auto relative z-50 flex w-full flex-col gap-2"
+            : `pointer-events-auto fixed z-50 flex w-[min(calc(100vw-24px),560px)] flex-col gap-2 ${isVisible ? "animate-menu-reveal" : "invisible"}`
+        }
+        style={
+          windowFitted
+            ? undefined
+            : {
+                top: position?.y ?? 0,
+                left: position?.x ?? 0,
+              }
+        }
         onMouseDown={(event) => {
           event.stopPropagation();
         }}
@@ -671,6 +771,7 @@ export default function FloatingActionMenu({
         {result && (
           <ResultBadge
             ref={resultPanelRef}
+            stacked
             title={result.title}
             content={result.content}
             detail={result.detail}
@@ -698,11 +799,11 @@ export default function FloatingActionMenu({
             role="button"
             tabIndex={0}
             aria-label="Arrastrar menú"
-            onPointerDown={handleDragStart}
-            onPointerMove={handleDragMove}
-            onPointerUp={handleDragEnd}
-            onPointerCancel={handleDragEnd}
-            className={`relative flex items-center justify-center gap-1.5 border-b border-white/10 py-1.5 pr-9 text-[10px] tracking-wide text-slate-500 touch-none select-none ${
+            onPointerDown={handlePanelDragStart}
+            onPointerMove={windowFitted ? undefined : handleDragMove}
+            onPointerUp={windowFitted ? undefined : handleDragEnd}
+            onPointerCancel={windowFitted ? undefined : handleDragEnd}
+            className={`relative flex items-center justify-center gap-1.5 border-b border-white/10 py-1.5 pr-16 text-[10px] tracking-wide text-slate-500 touch-none select-none ${
               isDragging ? "cursor-grabbing bg-violet-500/10 text-violet-200" : "cursor-grab hover:bg-white/5 hover:text-slate-300"
             }`}
           >
@@ -710,15 +811,27 @@ export default function FloatingActionMenu({
               ⋮⋮
             </span>
             <span>Arrastra para mover el menú</span>
-            <button
-              type="button"
-              aria-label="Cerrar"
-              onPointerDown={(event) => event.stopPropagation()}
-              onClick={onClose}
-              className="absolute right-2 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-full border border-white/10 bg-slate-800/90 text-xs text-slate-300 transition hover:border-violet-400/40 hover:bg-slate-700 hover:text-white"
-            >
-              ✕
-            </button>
+            <div className="absolute right-2 top-1/2 flex -translate-y-1/2 items-center gap-1">
+              <button
+                type="button"
+                aria-label="Nueva captura"
+                title="Nueva captura"
+                onPointerDown={(event) => event.stopPropagation()}
+                onClick={handleNewCapture}
+                className="flex h-6 w-6 items-center justify-center rounded-full border border-white/10 bg-slate-800/90 text-slate-300 transition hover:border-violet-400/40 hover:bg-slate-700 hover:text-white"
+              >
+                <Camera className="h-3.5 w-3.5" aria-hidden />
+              </button>
+              <button
+                type="button"
+                aria-label="Cerrar"
+                onPointerDown={(event) => event.stopPropagation()}
+                onClick={onClose}
+                className="flex h-6 w-6 items-center justify-center rounded-full border border-white/10 bg-slate-800/90 text-xs text-slate-300 transition hover:border-violet-400/40 hover:bg-slate-700 hover:text-white"
+              >
+                ✕
+              </button>
+            </div>
           </div>
 
           {qrContent && (
@@ -902,7 +1015,7 @@ export default function FloatingActionMenu({
         </div>
       </div>
 
-      <CopyToast message={toast} />
+      <CopyToast message={toast} compact={windowFitted} />
     </>
   );
 }

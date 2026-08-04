@@ -9,6 +9,8 @@ interface ResultBadgeProps {
   shopListings?: ShopListing[];
   onCopy: () => void;
   copied: boolean;
+  /** When true, sits in document flow (compact overlay window). */
+  stacked?: boolean;
 }
 
 async function visitStore(url: string) {
@@ -22,6 +24,7 @@ export default function ResultBadge({
   shopListings,
   onCopy,
   copied,
+  stacked = false,
   ref,
 }: ResultBadgeProps & { ref?: Ref<HTMLDivElement> }) {
   const hasShopListings = !!shopListings && shopListings.length > 0;
@@ -29,9 +32,19 @@ export default function ResultBadge({
   return (
     <div
       ref={ref}
-      className="absolute -top-2 left-1/2 z-20 min-w-[380px] w-[min(calc(100vw-24px),560px)] -translate-x-1/2 -translate-y-full animate-submenu-reveal"
+      className={
+        stacked
+          ? "relative z-20 w-full min-w-0"
+          : "absolute -top-2 left-1/2 z-20 min-w-[380px] w-[min(calc(100vw-24px),560px)] -translate-x-1/2 -translate-y-full animate-submenu-reveal"
+      }
     >
-      <div className="flex max-h-[60vh] flex-col overflow-hidden rounded-xl border border-violet-400/30 bg-slate-900 shadow-[0_12px_32px_rgba(0,0,0,0.45)]">
+      <div
+        className={
+          stacked
+            ? "flex max-h-[420px] flex-col overflow-hidden rounded-xl border border-violet-400/30 bg-slate-900 shadow-[0_12px_32px_rgba(0,0,0,0.45)]"
+            : "flex max-h-[60vh] flex-col overflow-hidden rounded-xl border border-violet-400/30 bg-slate-900 shadow-[0_12px_32px_rgba(0,0,0,0.45)]"
+        }
+      >
         <div className="sticky top-0 z-10 flex items-center justify-between gap-2 border-b border-white/10 bg-slate-900/95 px-3 py-2 backdrop-blur-sm">
           <p className="text-xs font-semibold uppercase tracking-wide text-violet-300">
             {title}
@@ -94,11 +107,17 @@ interface ToastProps {
   message: string;
 }
 
-export function CopyToast({ message }: ToastProps) {
+export function CopyToast({ message, compact = false }: ToastProps & { compact?: boolean }) {
   if (!message) return null;
 
   return (
-    <div className="pointer-events-none fixed bottom-6 left-1/2 z-[60] -translate-x-1/2 animate-submenu-reveal">
+    <div
+      className={
+        compact
+          ? "pointer-events-none absolute bottom-3 left-1/2 z-[60] -translate-x-1/2 animate-submenu-reveal"
+          : "pointer-events-none fixed bottom-6 left-1/2 z-[60] -translate-x-1/2 animate-submenu-reveal"
+      }
+    >
       <div className="rounded-full border border-emerald-400/30 bg-emerald-950/90 px-4 py-2 text-sm font-medium text-emerald-100 shadow-lg">
         {message}
       </div>

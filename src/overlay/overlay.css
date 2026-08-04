@@ -51,6 +51,15 @@ body,
   user-select: none;
 }
 
+/* Compact tools window: size follows panel content, not the monitor. */
+html.overlay-compact,
+html.overlay-compact body,
+html.overlay-compact #root {
+  height: auto;
+  min-height: 0;
+  overflow: visible;
+}
+
 .animate-menu-reveal {
   animation: var(--animate-menu-reveal);
 }
