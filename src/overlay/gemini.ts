@@ -254,6 +254,8 @@ export interface ShopListing {
   price: string;
   priceValue: number | null;
   url: string;
+  /** True when the URL is a store search page, not a direct product page. */
+  isSearchFallback: boolean;
 }
 
 export interface ShopSearchResponse {
@@ -263,38 +265,40 @@ export interface ShopSearchResponse {
   message?: string;
 }
 
-function buildShopPrompt(contextText: string, mode: "search" | "compare"): string {
-  const goal =
-    mode === "compare"
-      ? "Compara precios del producto identificado en distintas tiendas en línea."
-      : "Identifica el producto y sugiere opciones de compra en línea.";
+const SHOP_WEB_SEARCH_MODEL = "gpt-4o-mini";
 
-  return `${goal}
+function buildShopPrompt(contextText: string): string {
+  return `Identifica el producto comprable en la imagen adjunta y usa la herramienta de búsqueda web para encontrar precios reales en tiendas en línea.
 
 Contexto OCR: "${contextText}"
 
-Si NO puedes identificar claramente un producto comprable específico en la imagen (artículo de tienda, objeto físico reconocible para comprar, etc.), responde ÚNICAMENTE con este texto exacto, sin comillas ni markdown:
+Prioriza tiendas como Amazon, Mercado Libre y al menos una tienda adicional relevante según el producto y la región (México/LATAM cuando aplique).
+
+Si NO puedes identificar claramente un producto comprable específico en la imagen, responde ÚNICAMENTE con este texto exacto, sin comillas ni markdown:
 ${SHOP_NO_PRODUCT_MESSAGE}
 
-Si sí identificas un producto, responde ÚNICAMENTE con JSON válido (sin markdown ni texto adicional) con esta forma:
+Si sí identificas un producto, usa los resultados reales de la búsqueda web y responde ÚNICAMENTE con JSON válido (sin markdown ni texto adicional) con esta forma:
 {
   "productName": "nombre del producto",
   "listings": [
     {
-      "storeName": "Nombre de la tienda",
+      "storeName": "Amazon",
       "price": "$1,299.00",
       "priceValue": 1299,
-      "url": "https://url-directa-al-producto-o-busqueda-especifica"
+      "url": "https://www.amazon.com.mx/dp/...",
+      "isSearchFallback": false
     }
   ]
 }
 
 Reglas estrictas:
-- No inventes productos, tiendas, precios ni URLs si no hay un producto claramente comprable.
+- NO inventes URLs de producto. Solo usa URLs que aparezcan en los resultados de la búsqueda web.
+- Si para una tienda no encuentras la página específica del producto, usa un enlace de búsqueda de esa tienda (ej. https://www.amazon.com.mx/s?k=<término_codificado> o https://listado.mercadolibre.com.mx/<término>) y marca "isSearchFallback": true.
+- Si sí tienes la URL real de la página del producto, marca "isSearchFallback": false.
 - Incluye entre 3 y 6 tiendas cuando sea posible.
-- Cada listing debe tener storeName, price (legible con moneda), priceValue (número para ordenar) y url (enlace directo al producto o búsqueda muy específica del producto).
+- Cada listing debe tener storeName, price (legible con moneda), priceValue (número para ordenar), url e isSearchFallback.
 - Ordena listings de menor a mayor priceValue.
-- Usa tiendas reconocibles cuando sea razonable.`;
+- No inventes precios: usa los que aparezcan en la búsqueda o, si solo hay enlace de búsqueda, indica un precio aproximado visible o "Consultar" con priceValue null.`;
 }
 
 function parsePriceValue(value: unknown): number | null {
@@ -304,6 +308,47 @@ function parsePriceValue(value: unknown): number | null {
     return Number.isFinite(parsed) ? parsed : null;
   }
   return null;
+}
+
+function extractResponsesOutputText(response: {
+  output_text?: string;
+  output?: Array<{
+    type?: string;
+    content?: Array<{ type?: string; text?: string }>;
+  }>;
+}): string {
+  const direct = response.output_text?.trim();
+  if (direct) return direct;
+
+  const parts: string[] = [];
+  for (const item of response.output ?? []) {
+    if (item.type !== "message" || !Array.isArray(item.content)) continue;
+    for (const content of item.content) {
+      if (content.type === "output_text" && typeof content.text === "string") {
+        parts.push(content.text);
+      }
+    }
+  }
+
+  return parts.join("\n").trim();
+}
+
+function looksLikeSearchUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    const path = parsed.pathname.toLowerCase();
+    const query = parsed.search.toLowerCase();
+    return (
+      path.includes("/s") ||
+      path.includes("/search") ||
+      path.includes("/listado") ||
+      query.includes("k=") ||
+      query.includes("q=") ||
+      query.includes("search")
+    );
+  } catch {
+    return false;
+  }
 }
 
 function parseShopSearchResponse(raw: string): ShopSearchResponse {
@@ -339,6 +384,7 @@ function parseShopSearchResponse(raw: string): ShopSearchResponse {
         price?: unknown;
         priceValue?: unknown;
         url?: unknown;
+        isSearchFallback?: unknown;
       }>;
     };
 
@@ -346,17 +392,23 @@ function parseShopSearchResponse(raw: string): ShopSearchResponse {
       .map((listing) => {
         const storeName =
           typeof listing.storeName === "string" ? listing.storeName.trim() : "";
-        const price = typeof listing.price === "string" ? listing.price.trim() : "";
+        const price =
+          typeof listing.price === "string" && listing.price.trim()
+            ? listing.price.trim()
+            : "Consultar";
         const url = typeof listing.url === "string" ? listing.url.trim() : "";
         const priceValue = parsePriceValue(listing.priceValue ?? listing.price);
+        const flaggedFallback = listing.isSearchFallback === true;
+        const isSearchFallback = flaggedFallback || looksLikeSearchUrl(url);
 
-        if (!storeName || !price || !url) return null;
+        if (!storeName || !url) return null;
 
         return {
           storeName,
           price,
           priceValue,
           url,
+          isSearchFallback,
         } satisfies ShopListing;
       })
       .filter((listing): listing is ShopListing => listing !== null)
@@ -395,34 +447,47 @@ function parseShopSearchResponse(raw: string): ShopSearchResponse {
   }
 }
 
-async function geminiShopLookup(
+async function generateShopContentWithWebSearch(
+  prompt: string,
   imageBase64: string,
-  contextText: string,
-  mode: "search" | "compare",
-  model?: OpenAIModelId,
-): Promise<ShopSearchResponse> {
-  const raw = await generateContent(
-    buildShopPrompt(contextText, mode),
-    imageBase64,
-    model,
-  );
-  return parseShopSearchResponse(raw);
+): Promise<string> {
+  const client = getOpenAIClient();
+
+  const response = await client.responses.create({
+    model: SHOP_WEB_SEARCH_MODEL,
+    tools: [{ type: "web_search" }],
+    input: [
+      {
+        role: "user",
+        content: [
+          { type: "input_text", text: prompt },
+          {
+            type: "input_image",
+            detail: "auto",
+            image_url: `data:image/png;base64,${imageBase64}`,
+          },
+        ],
+      },
+    ],
+  });
+
+  const text = extractResponsesOutputText(response);
+  if (!text) {
+    throw new Error("OpenAI no devolvió contenido para la búsqueda de producto.");
+  }
+
+  return text;
 }
 
 export async function geminiShopSearch(
   imageBase64: string,
   contextText: string,
-  model?: OpenAIModelId,
 ): Promise<ShopSearchResponse> {
-  return geminiShopLookup(imageBase64, contextText, "search", model);
-}
-
-export async function geminiComparePrices(
-  imageBase64: string,
-  contextText: string,
-  model?: OpenAIModelId,
-): Promise<ShopSearchResponse> {
-  return geminiShopLookup(imageBase64, contextText, "compare", model);
+  const raw = await generateShopContentWithWebSearch(
+    buildShopPrompt(contextText),
+    imageBase64,
+  );
+  return parseShopSearchResponse(raw);
 }
 
 export async function geminiExtractTextFromImage(

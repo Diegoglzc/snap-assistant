@@ -1,5 +1,5 @@
 import { type Ref } from "react";
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { invoke } from "@tauri-apps/api/core";
 import type { ShopListing } from "./gemini";
 
 interface ResultBadgeProps {
@@ -9,6 +9,10 @@ interface ResultBadgeProps {
   shopListings?: ShopListing[];
   onCopy: () => void;
   copied: boolean;
+}
+
+async function visitStore(url: string) {
+  await invoke("open_external_url", { url });
 }
 
 export default function ResultBadge({
@@ -52,19 +56,26 @@ export default function ResultBadge({
                   className="rounded-xl border border-white/10 bg-white/[0.03] p-3"
                 >
                   <div className="flex items-start justify-between gap-3">
-                    <p className="text-sm font-medium text-slate-100">
-                      {listing.storeName}
-                    </p>
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium text-slate-100">
+                        {listing.storeName}
+                      </p>
+                      {listing.isSearchFallback && (
+                        <p className="mt-0.5 text-[11px] text-amber-200/80">
+                          Enlace de búsqueda
+                        </p>
+                      )}
+                    </div>
                     <p className="shrink-0 text-base font-semibold text-violet-200">
                       {listing.price}
                     </p>
                   </div>
                   <button
                     type="button"
-                    onClick={() => void openUrl(listing.url)}
+                    onClick={() => void visitStore(listing.url)}
                     className="mt-2 rounded-lg border border-violet-400/30 bg-violet-500/10 px-3 py-1.5 text-xs font-medium text-violet-100 transition hover:border-violet-400/50 hover:bg-violet-500/20"
                   >
-                    Visitar tienda
+                    {listing.isSearchFallback ? "Buscar en tienda" : "Visitar tienda"}
                   </button>
                 </div>
               ))}

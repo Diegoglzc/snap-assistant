@@ -31,7 +31,11 @@ export const MENU_CATEGORIES: MenuCategory[] = [
     label: "Visión IA",
     actions: [
       { id: "identify-object", label: "Identificar Objeto/Lugar" },
-      { id: "explain-error", label: "Explicar Error" },
+      {
+        id: "explain-error",
+        label: "Explicar código/error",
+        description: "Analiza código o mensajes de error en la captura",
+      },
     ],
   },
   {
@@ -39,8 +43,11 @@ export const MENU_CATEGORIES: MenuCategory[] = [
     icon: "🛒",
     label: "Shop",
     actions: [
-      { id: "search-product", label: "Buscar Producto" },
-      { id: "compare-prices", label: "Comparar Precios" },
+      {
+        id: "search-product",
+        label: "Buscar Producto",
+        description: "Busca precios reales en tiendas en línea",
+      },
     ],
   },
   {
@@ -76,6 +83,7 @@ export interface CaptureCategoryAvailability {
   events: boolean;
   shop: boolean;
   vision: boolean;
+  looksLikeCode: boolean;
 }
 
 export function hasDatePattern(text: string): boolean {
@@ -84,6 +92,32 @@ export function hasDatePattern(text: string): boolean {
     SPANISH_MONTH_PATTERN.test(text) ||
     NUMERIC_DATE_PATTERN.test(text) ||
     TIME_PATTERN.test(text)
+  );
+}
+
+const CODE_KEYWORD_PATTERN =
+  /\b(function|const|let|var|import|export|class|return|async|await|def|try|catch|throw|Exception|Error|Traceback|TypeError|ReferenceError|SyntaxError|NullPointerException|undefined|null)\b/;
+const CODE_BRACE_PATTERN = /[{}[\];]/;
+const CODE_LINE_END_SEMICOLON = /;\s*$/m;
+const ERROR_MESSAGE_PATTERN =
+  /\b(Error:|Exception:|Traceback|FATAL ERROR|UnhandledPromiseRejection|panic:|Segmentation fault)\b/i;
+
+export function hasCodePattern(text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed) return false;
+
+  const keywordHits = trimmed.match(
+    new RegExp(CODE_KEYWORD_PATTERN.source, "gi"),
+  )?.length ?? 0;
+  const hasBraces = CODE_BRACE_PATTERN.test(trimmed);
+  const hasSemicolonLines = CODE_LINE_END_SEMICOLON.test(trimmed);
+  const hasErrorMessage = ERROR_MESSAGE_PATTERN.test(trimmed);
+
+  return (
+    hasErrorMessage ||
+    keywordHits >= 2 ||
+    (keywordHits >= 1 && (hasBraces || hasSemicolonLines)) ||
+    (hasBraces && hasSemicolonLines)
   );
 }
 
@@ -101,6 +135,7 @@ export function classifyCaptureCategories(
     events: hasDatePattern(trimmed),
     shop: hasCapturedImage,
     vision: true,
+    looksLikeCode: hasCodePattern(trimmed),
   };
 }
 

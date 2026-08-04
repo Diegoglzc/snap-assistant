@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { Code, Eye } from "lucide-react";
 import { classifyCaptureCategories, MENU_CATEGORIES } from "./categories";
 import { copyToClipboard } from "./clipboard";
 import {
-  geminiComparePrices,
   geminiExplainError,
   geminiExtractCalendarEvent,
   geminiExtractList,
@@ -198,12 +199,34 @@ export default function FloatingActionMenu({
   };
 
   const isActionHighlighted = (categoryId: MenuCategoryId, actionId: string) => {
-    return (
+    if (
       categoryId === "text" &&
       analysis.isLongText &&
       (actionId === "translate" || actionId === "summarize")
-    );
+    ) {
+      return true;
+    }
+
+    if (
+      categoryId === "vision" &&
+      actionId === "explain-error" &&
+      categoryAvailability.looksLikeCode
+    ) {
+      return true;
+    }
+
+    return false;
   };
+
+  function renderActionIcon(actionId: string) {
+    if (actionId === "explain-error") {
+      return <Code className="h-3.5 w-3.5 shrink-0 opacity-90" aria-hidden />;
+    }
+    if (actionId === "identify-object") {
+      return <Eye className="h-3.5 w-3.5 shrink-0 opacity-90" aria-hidden />;
+    }
+    return null;
+  }
 
   const isCategoryDimmed = useCallback(
     (categoryId: MenuCategoryId) => {
@@ -382,21 +405,18 @@ export default function FloatingActionMenu({
       } else if (categoryId === "vision" && actionId === "explain-error") {
         content = await geminiExplainError(imageBase64, ocrPreview);
       } else if (categoryId === "shop") {
-        const shopResult =
-          actionId === "compare-prices"
-            ? await geminiComparePrices(imageBase64, ocrPreview)
-            : await geminiShopSearch(imageBase64, ocrPreview);
+        const shopResult = await geminiShopSearch(imageBase64, ocrPreview);
 
         const actionLabel =
           MENU_CATEGORIES.find((c) => c.id === categoryId)?.actions.find(
             (a) => a.id === actionId,
-          )?.label ?? "Resultado";
+          )?.label ?? "Buscar Producto";
 
         if (shopResult.noProductIdentified) {
           setResult({
             title: actionLabel,
             content: shopResult.message ?? SHOP_NO_PRODUCT_MESSAGE,
-            detail: usedImageFallback ? "Procesado con OpenAI (imagen)" : undefined,
+            detail: "Búsqueda web con OpenAI",
           });
           return;
         }
@@ -405,7 +425,7 @@ export default function FloatingActionMenu({
           title: actionLabel,
           content: shopResult.productName ?? "Producto identificado",
           shopListings: shopResult.listings,
-          detail: usedImageFallback ? "Procesado con OpenAI (imagen)" : undefined,
+          detail: "Precios vía búsqueda web (OpenAI)",
         });
         return;
       }
@@ -442,7 +462,10 @@ export default function FloatingActionMenu({
           top: position?.y ?? 0,
           left: position?.x ?? 0,
         }}
-        onMouseDown={(event) => event.stopPropagation()}
+        onMouseDown={(event) => {
+          event.stopPropagation();
+          void invoke("set_overlay_always_on_top", { enabled: true });
+        }}
       >
         {result && (
           <ResultBadge
@@ -458,7 +481,9 @@ export default function FloatingActionMenu({
                     result.content,
                     ...result.shopListings.map(
                       (listing) =>
-                        `${listing.storeName}: ${listing.price} · ${listing.url}`,
+                        `${listing.storeName}: ${listing.price} · ${listing.url}${
+                          listing.isSearchFallback ? " (búsqueda)" : ""
+                        }`,
                     ),
                   ].join("\n")
                 : result.content;
@@ -609,6 +634,7 @@ export default function FloatingActionMenu({
                           {isLoading && (
                             <span className="inline-block h-3 w-3 shrink-0 animate-spin rounded-full border-2 border-violet-300/30 border-t-violet-300" />
                           )}
+                          {renderActionIcon(action.id)}
                           {action.label}
                         </span>
                         {action.description && (

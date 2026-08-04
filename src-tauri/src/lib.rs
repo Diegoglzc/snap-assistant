@@ -11,6 +11,7 @@ use monitor_picker::{
 use ocr::OcrResult;
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder, WindowEvent};
+use tauri_plugin_opener::OpenerExt;
 use std::str::FromStr;
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 
@@ -367,6 +368,32 @@ fn update_global_shortcut(
     Ok(())
 }
 
+#[tauri::command]
+fn open_external_url(app: AppHandle, url: String) -> Result<(), String> {
+    if let Some(overlay) = app.get_webview_window(OVERLAY_WINDOW_LABEL) {
+        overlay
+            .set_always_on_top(false)
+            .map_err(|error| error.to_string())?;
+    }
+
+    app.opener()
+        .open_url(url, None::<&str>)
+        .map_err(|error| error.to_string())?;
+
+    Ok(())
+}
+
+#[tauri::command]
+fn set_overlay_always_on_top(app: AppHandle, enabled: bool) -> Result<(), String> {
+    if let Some(overlay) = app.get_webview_window(OVERLAY_WINDOW_LABEL) {
+        overlay
+            .set_always_on_top(enabled)
+            .map_err(|error| error.to_string())?;
+    }
+
+    Ok(())
+}
+
 fn load_env() {
     let _ = dotenvy::dotenv();
 }
@@ -431,7 +458,9 @@ pub fn run() {
             cancel_capture,
             confirm_monitor_selection,
             cancel_monitor_picker,
-            update_global_shortcut
+            update_global_shortcut,
+            open_external_url,
+            set_overlay_always_on_top
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application")
