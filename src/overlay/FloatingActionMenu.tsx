@@ -93,6 +93,11 @@ const DATA_NUMERIC_ACTIONS = new Set([
 
 const TEXT_GEMINI_ACTIONS = new Set(["translate", "summarize", "extract-list"]);
 
+const DISABLED_CLICK_WINDOW_MS = 3000;
+const DISABLED_HINT_DURATION_MS = 2500;
+const DISABLED_HINT_CLICK_THRESHOLD = 2;
+const DISABLED_HINT_MESSAGE = "Esta herramienta no aplica para lo que seleccionaste";
+
 function isGeminiAction(categoryId: MenuCategoryId, actionId: string): boolean {
   if (categoryId === "text") {
     return TEXT_GEMINI_ACTIONS.has(actionId);
@@ -118,10 +123,20 @@ export default function FloatingActionMenu({
   const [resultCopied, setResultCopied] = useState(false);
   const [speaking, setSpeaking] = useState(false);
   const [windowFitted, setWindowFitted] = useState(false);
+  const [disabledHint, setDisabledHint] = useState<{
+    key: string;
+    top: number;
+    left: number;
+    width: number;
+  } | null>(null);
   const [targetLanguage, setTargetLanguage] = useState<TargetLanguageCode>(
     getDefaultTargetLanguage,
   );
   const toastTimer = useRef<number | null>(null);
+  const disabledHintTimer = useRef<number | null>(null);
+  const disabledClicksRef = useRef(
+    new Map<string, { count: number; lastAt: number }>(),
+  );
   const resultPanelRef = useRef<HTMLDivElement>(null);
   const guardrailsApplied = useRef(false);
   const fittingRef = useRef(false);
@@ -207,6 +222,12 @@ export default function FloatingActionMenu({
     setLoadingAction(null);
     setSpeaking(false);
     setWindowFitted(false);
+    setDisabledHint(null);
+    disabledClicksRef.current.clear();
+    if (disabledHintTimer.current) {
+      window.clearTimeout(disabledHintTimer.current);
+      disabledHintTimer.current = null;
+    }
     lastFitSize.current = { width: 0, height: 0 };
     stopSpeaking();
     setTargetLanguage(getDefaultTargetLanguage());
@@ -215,6 +236,9 @@ export default function FloatingActionMenu({
   useEffect(() => {
     return () => {
       stopSpeaking();
+      if (disabledHintTimer.current) {
+        window.clearTimeout(disabledHintTimer.current);
+      }
     };
   }, []);
 
@@ -222,6 +246,42 @@ export default function FloatingActionMenu({
     setTargetLanguage(code);
     setDefaultTargetLanguage(code);
   };
+
+  const showDisabledHint = useCallback((key: string, element: HTMLElement) => {
+    const rect = element.getBoundingClientRect();
+    setDisabledHint({
+      key,
+      top: rect.top,
+      left: rect.left,
+      width: rect.width,
+    });
+
+    if (disabledHintTimer.current) {
+      window.clearTimeout(disabledHintTimer.current);
+    }
+    disabledHintTimer.current = window.setTimeout(() => {
+      setDisabledHint(null);
+      disabledHintTimer.current = null;
+    }, DISABLED_HINT_DURATION_MS);
+  }, []);
+
+  const handleDisabledTargetClick = useCallback(
+    (key: string, element: HTMLElement) => {
+      const now = Date.now();
+      const previous = disabledClicksRef.current.get(key);
+      const count =
+        previous && now - previous.lastAt <= DISABLED_CLICK_WINDOW_MS
+          ? previous.count + 1
+          : 1;
+
+      disabledClicksRef.current.set(key, { count, lastAt: now });
+
+      if (count >= DISABLED_HINT_CLICK_THRESHOLD) {
+        showDisabledHint(key, element);
+      }
+    },
+    [showDisabledHint],
+  );
 
   useEffect(() => {
     if (ocrLoading || guardrailsApplied.current || captureError) return;
@@ -294,8 +354,12 @@ export default function FloatingActionMenu({
   ): boolean => {
     if (captureError) return true;
 
-    if (categoryId === "vision" || categoryId === "shop") {
+    if (categoryId === "vision") {
       return !hasCapturedImage;
+    }
+
+    if (categoryId === "shop") {
+      return !categoryAvailability.shop;
     }
 
     if (categoryId === "events") {
@@ -384,18 +448,12 @@ export default function FloatingActionMenu({
       if (captureError) return categoryId !== "text";
 
       if (categoryId === "data") {
-        return !analysis.hasNumbers && !hasCapturedImage && !hasConvertible;
+        return !analysis.hasNumbers && !hasConvertible;
       }
 
       return !categoryAvailability[categoryId];
     },
-    [
-      analysis.hasNumbers,
-      captureError,
-      categoryAvailability,
-      hasCapturedImage,
-      hasConvertible,
-    ],
+    [analysis.hasNumbers, captureError, categoryAvailability, hasConvertible],
   );
 
   useEffect(() => {
@@ -883,8 +941,17 @@ export default function FloatingActionMenu({
                 <button
                   key={category.id}
                   type="button"
-                  onClick={() => setActiveCategory(category.id)}
-                  disabled={dimmed}
+                  aria-disabled={dimmed}
+                  onClick={(event) => {
+                    if (dimmed) {
+                      handleDisabledTargetClick(
+                        `category:${category.id}`,
+                        event.currentTarget,
+                      );
+                      return;
+                    }
+                    setActiveCategory(category.id);
+                  }}
                   className={`relative flex min-w-0 flex-1 flex-col items-center gap-0.5 rounded-xl px-1.5 py-2 text-[11px] font-medium transition-all duration-200 ${
                     dimmed
                       ? "cursor-not-allowed opacity-40"
@@ -983,10 +1050,21 @@ export default function FloatingActionMenu({
                       <button
                         key={action.id}
                         type="button"
-                        disabled={disabled || isLoading}
-                        onClick={() => void handleAction(activeCategoryData.id, action.id)}
+                        disabled={isLoading}
+                        aria-disabled={disabled || isLoading}
+                        onClick={(event) => {
+                          if (disabled) {
+                            handleDisabledTargetClick(
+                              `action:${activeCategoryData.id}:${action.id}`,
+                              event.currentTarget,
+                            );
+                            return;
+                          }
+                          if (isLoading) return;
+                          void handleAction(activeCategoryData.id, action.id);
+                        }}
                         className={`relative rounded-xl border px-3 py-2 text-left text-sm transition ${
-                          disabled
+                          disabled || isLoading
                             ? "cursor-not-allowed opacity-40 border-white/5 bg-white/[0.02] text-slate-500"
                             : highlighted
                               ? "border-violet-400/60 bg-violet-500/15 text-violet-50 shadow-[0_0_12px_rgba(139,92,246,0.25)]"
@@ -1013,6 +1091,19 @@ export default function FloatingActionMenu({
             )}
           </div>
         </div>
+
+        {disabledHint && (
+          <div
+            role="status"
+            className="pointer-events-none fixed z-[80] max-w-[240px] -translate-x-1/2 -translate-y-full animate-submenu-reveal rounded-lg border border-amber-400/35 bg-slate-950/95 px-2.5 py-1.5 text-center text-[11px] leading-snug text-amber-50 shadow-[0_8px_24px_rgba(0,0,0,0.45)]"
+            style={{
+              top: Math.max(8, disabledHint.top - 6),
+              left: disabledHint.left + disabledHint.width / 2,
+            }}
+          >
+            {DISABLED_HINT_MESSAGE}
+          </div>
+        )}
       </div>
 
       <CopyToast message={toast} compact={windowFitted} />

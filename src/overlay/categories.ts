@@ -118,6 +118,10 @@ const CODE_LINE_END_SEMICOLON = /;\s*$/m;
 const ERROR_MESSAGE_PATTERN =
   /\b(Error:|Exception:|Traceback|FATAL ERROR|UnhandledPromiseRejection|panic:|Segmentation fault)\b/i;
 
+/** Same thresholds as ocrAnalysis.ts for long-text detection. */
+const LONG_TEXT_CHARS = 120;
+const LONG_TEXT_WORDS = 25;
+
 export function hasCodePattern(text: string): boolean {
   const trimmed = text.trim();
   if (!trimmed) return false;
@@ -145,12 +149,17 @@ export function classifyCaptureCategories(
   const hasText = trimmed.length > 0;
   const hasNumbers = extractNumbers(trimmed).length > 0;
   const hasUnits = hasConvertibleUnits(trimmed);
+  const wordCount = trimmed.split(/\s+/).filter(Boolean).length;
+  const isLongText =
+    trimmed.length > LONG_TEXT_CHARS || wordCount > LONG_TEXT_WORDS;
 
   return {
     text: hasText,
     data: hasNumbers || hasUnits,
     events: hasDatePattern(trimmed),
-    shop: hasCapturedImage,
+    shop:
+      hasCapturedImage &&
+      (!hasText || (!isLongText && wordCount <= 12)),
     vision: true,
     looksLikeCode: hasCodePattern(trimmed),
   };
